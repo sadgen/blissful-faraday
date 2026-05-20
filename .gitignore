@@ -1,0 +1,18 @@
+# Dependency directories
+node_modules/
+
+# Production build output
+dist/
+dist-ssr/
+
+# Local env files
+*.local
+.env*.local
+
+# Editor/OS files
+.DS_Store
+Thumbs.db
+
+# User resources (ignore all sub-folders of resources, preserving the resources folder itself)
+resources/*/
+test/
