@@ -41,6 +41,13 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Ensure no scrollbars anywhere */
+html, body, #root, .app-container {
+  overflow: hidden !important;
+  margin: 0;
+  padding: 0;
+}
+
 /* Glassmorphism panel styling */
 .glass-panel {
   background: var(--glass-bg);
@@ -163,10 +170,10 @@ body {
   position: relative;
   width: 100%;
   height: 100%;
-  padding: 20px;
+  padding: 0; /* No padding to prevent overflow */
   background: #000;
-  transition: var(--transition-slow);
-  overflow: auto;
+  transition: background 0.6s cubic-bezier(0.4, 0, 0.2, 1); /* Only animate background, not layout */
+  overflow: hidden; /* Prevent scrollbars */
 }
 
 /* Sub-window (Slideshow Tile) Container */
@@ -178,7 +185,7 @@ body {
   justify-content: center;
   align-items: center;
   border-radius: 8px;
-  transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1); /* Increased duration for smoother size changes */
+  transition: opacity 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease, transform 0.3s ease; /* Only animate visual properties, not size */
   /* Use CSS containment to boost rendering performance for huge images */
   contain: layout paint style;
   
@@ -186,7 +193,7 @@ body {
   opacity: 0.85;
   z-index: 1;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
-  border: 2px solid rgba(255, 255, 255, 0.15);
+  border: none; /* No border to prevent overflow */
 }
 
 .slideshow-tile:hover {

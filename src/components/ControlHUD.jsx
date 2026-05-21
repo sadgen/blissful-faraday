@@ -294,9 +294,9 @@ export default function ControlHUD({
             
             {/* Speed Slider Label */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', opacity: globalIsPlaying ? 1 : 0.4, transition: 'var(--transition-smooth)' }}>
-              <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>播放速度:</span>
+              <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>轮换周期 (所有窗口依次刷新):</span>
               <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--accent-blue)' }}>
-                {speedInSeconds} 秒 / 张
+                {speedInSeconds} 秒 / 轮
               </span>
             </div>
 
@@ -338,6 +338,18 @@ export default function ControlHUD({
                   </button>
                 ))}
               </div>
+            </div>
+            
+            {/* Stagger explanation */}
+            <div style={{ 
+              fontSize: '0.6rem', 
+              color: 'var(--text-muted)', 
+              lineHeight: 1.3,
+              marginTop: -2,
+              opacity: globalIsPlaying ? 1 : 0.4,
+              transition: 'var(--transition-smooth)'
+            }}>
+              💡 切换间隔 = 周期 ÷ 窗口数。如 5 秒 5 窗口，每个窗口每 1 秒切换一张图，依次顺次更新。
             </div>
           </div>
         </div>

@@ -453,6 +453,7 @@ function imageScannerApiPlugin() {
 export default defineConfig({
   plugins: [react(), imageScannerApiPlugin()],
   server: {
+    host: '0.0.0.0', // Allow LAN access
     port: 3000,
     open: true
   }

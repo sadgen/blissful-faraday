@@ -18,17 +18,18 @@ To make the image viewer incredibly fast and resilient to server restarts when h
 ### 1. Backend Server Config (`vite.config.js`)
 We will upgrade `vite.config.js` to implement the persistent disk cache system:
 
-- **Cache Helpers**:
-  - `getCacheFilePath(dir)`: Resolves the cache file path to `path.join(dir, '.collection-cache.json')`.
-  - `loadPersistentCache(dir)`: Attempts to read and parse the cache file. If found, populates the in-memory `collectionsCache` and `collectionImagesCache` keys.
-  - `savePersistentCache(dir, collections, collectionImages)`: Safely writes the current scanned dataset into `.collection-cache.json`.
-  - `clearPersistentCache(dir)`: Deletes the cache file on directory changes or manual rescan requests.
-- **Hidden File Filtering**:
-  - Modify `/api/collections` to ignore any subdirectory where `name.startsWith('.')`.
-- **Cache Hits Flow**:
-  - **`/api/collections`**: Checks in-memory cache -> checks `.collection-cache.json` -> performs disk scan on miss -> saves to memory and disk cache.
-  - **`/api/collection/images`**: Checks in-memory cache -> checks loaded persistent cache -> performs folder scan on miss -> updates memory and writes updated cache to disk.
-  - **`/api/settings`**: Clears persistent cache file in the old directory and triggers loading/creation in the new directory.
+## Proposed Changes
+
+### 1. Viewport Grid System (`src/App.jsx` and `src/index.css`)
+
+We will replace the absolute positioning logic in `src/App.jsx` with a CSS Grid layout that adapts to the number of active windows.
+
+- **Disable Pagination**: Clean up `currentPage`, `pageSize`, `isPaginated`, and `totalPages` state and calculations.
+- **Simplified Active Collections**:
+  - In folder split mode (`isAutoTiling === true`): Render all scanned collections.
+  - In custom grid mode (`isAutoTiling === false`): Render the first `tileCount` collections.
+- **CSS Grid Container**: Set `viewport-grid` as a CSS Grid using inline `gridTemplateColumns` and `gridTemplateRows` styled dynamically by the calculated `gridCols` and `gridRows`.
+- **Automatic Layout calculation**: Keep `autoCalculateGridLayout` but trigger it whenever the number of active collections changes or on window resize.
 
 ---
 

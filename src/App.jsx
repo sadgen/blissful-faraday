@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { RefreshCw, FolderOpen, Save, X, Settings, Image, Play, Pause, AlertTriangle, ChevronLeft, ChevronRight, Database, Trash2 } from 'lucide-react';
 import SlideshowTile from './components/SlideshowTile';
 import ControlHUD from './components/ControlHUD';
+import { SlideshowProvider } from './context/SlideshowContext';
 
 export default function App() {
   // Load saved configuration from localStorage
@@ -49,7 +50,7 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(0);
   const pageSize = 12; // Fixed page size for non-auto tiling mode only
 
-  const [sortMethod, setSortMethod] = useState('name'); // 'name', 'date', 'random'
+  const [sortMethod, setSortMethod] = useState('random'); // 'name', 'date', 'random'
   const [randomTrigger, setRandomTrigger] = useState(0);
   
   // Tile positioning state for floating layout
@@ -57,6 +58,22 @@ export default function App() {
   
   // Store aspect ratios for each collection
   const [collectionAspectRatios, setCollectionAspectRatios] = useState({});
+  
+  // 窗口切换回调管理
+  const windowSwitchCallbacks = useRef({});
+  
+  // 注册窗口切换回调
+  const registerWindowSwitchCallback = useCallback((tileId, callback) => {
+    windowSwitchCallbacks.current[tileId] = callback;
+  }, []);
+  
+  // 处理窗口切换（由协调器调用）
+  const handleWindowSwitch = useCallback((tileId) => {
+    const callback = windowSwitchCallbacks.current[tileId];
+    if (callback) {
+      callback();
+    }
+  }, []);
 
   // 1.5. Process, sort and map collections to simple array of string names for backward compatibility
   const collections = React.useMemo(() => {
@@ -217,7 +234,7 @@ export default function App() {
       const presets = {
         1: { cols: 1, rows: 1 },
         3: { cols: 3, rows: 1 },
-        5: { cols: 5, rows: 1 },
+        5: { cols: 5, rows: 1 }, // Single row with large windows
         12: { cols: 6, rows: 2 }
       };
       
@@ -257,71 +274,59 @@ export default function App() {
   // Calculate floating tile positions with overlap
   const calculateTilePositions = React.useCallback((collections, containerWidth, containerHeight) => {
     const positions = {};
-    const overlapOffset = 80; // Increased overlap for tighter packing
-    const padding = 5; // Minimal padding to fill the screen
     
-    // Calculate available space (use almost entire screen)
-    const availableWidth = containerWidth - (padding * 2);
-    const availableHeight = containerHeight - (padding * 2);
+    // Preset configurations matching pigallery.user.js
+    const presets = {
+      1: { cols: 1, rows: 1, gap: 0 },
+      3: { cols: 3, rows: 1, gap: -80 },
+      5: { cols: 5, rows: 1, gap: -100 }, // 单行排列，顶部对齐
+      12: { cols: 6, rows: 2, gap: -80 }
+    };
     
-    // Use a larger base size to fill more space
-    const baseSize = Math.min(450, availableWidth / gridCols * 1.1); // 1.1 factor for better coverage
+    const preset = presets[collections.length];
+    if (!preset) {
+      // Fallback for other counts
+      return positions;
+    }
     
-    let currentX = padding;
-    let currentY = padding;
-    let rowHeight = 0;
-    let colCount = 0;
+    const { cols, rows, gap } = preset;
+    const screenW = containerWidth;
+    const screenH = containerHeight;
+    
+    // Calculate window width based on columns and gap
+    // Formula from pigallery: w = (screenW - GAP * (MAX_COLS - 1)) / MAX_COLS
+    const w = Math.floor((screenW - gap * (cols - 1)) / cols);
+    
+    // Initial aspect ratio for height calculation (before image loads)
+    const initAspect = 2 / 3; // Default portrait aspect ratio
+    let h = Math.round(w / initAspect);
+    
+    // Limit height to screen height
+    if (h > screenH) h = screenH;
+    
+    // 垂直居中偏移量
+    const verticalCenterOffset = Math.max(0, Math.floor((screenH - h) / 2));
     
     collections.forEach((collName, index) => {
-      // Use actual aspect ratio if available, otherwise default to 0.75 (3:4 portrait)
-      const aspectRatio = collectionAspectRatios[collName] || 0.75;
+      const col = index % cols;
+      const row = Math.floor(index / cols);
       
-      // Calculate dimensions based on aspect ratio, but keep within reasonable bounds
-      let tileWidth, tileHeight;
+      // 顶部对齐，垂直居中偏移
+      const topPos = verticalCenterOffset + row * (h + gap);
       
-      if (aspectRatio >= 1) {
-        // Landscape or square: width-based
-        tileWidth = baseSize;
-        tileHeight = tileWidth / aspectRatio;
-      } else {
-        // Portrait: height-based, but ensure minimum width
-        tileHeight = baseSize / 0.75; // Target height for portrait
-        tileWidth = tileHeight * aspectRatio;
-        
-        // Ensure portrait photos don't become too narrow
-        if (tileWidth < baseSize * 0.6) {
-          tileWidth = baseSize * 0.6;
-          tileHeight = tileWidth / aspectRatio;
-        }
-      }
-      
-      // Apply min/max constraints (slightly increased for better coverage)
-      tileWidth = Math.max(280, Math.min(550, tileWidth));
-      tileHeight = Math.max(320, Math.min(750, tileHeight));
-      
-      // Check if we need to start a new row
-      if (colCount >= gridCols && index > 0) {
-        currentX = padding;
-        currentY += rowHeight - overlapOffset; // Overlap between rows
-        rowHeight = 0;
-        colCount = 0;
-      }
+      // Horizontal position with gap
+      const leftPos = col * (w + gap);
       
       positions[collName] = {
-        left: currentX,
-        top: currentY,
-        width: tileWidth,
-        height: tileHeight
+        left: leftPos,
+        top: topPos,
+        width: w,
+        height: h
       };
-      
-      // Update position for next tile (horizontal overlap)
-      currentX += tileWidth - overlapOffset * 0.7; // More horizontal overlap
-      rowHeight = Math.max(rowHeight, tileHeight);
-      colCount++;
     });
     
     return positions;
-  }, [gridCols, gridRows, collectionAspectRatios]);
+  }, [collectionAspectRatios]);
 
   // Calculate tile positions when collections change or window resizes
   useEffect(() => {
@@ -364,7 +369,7 @@ export default function App() {
           }
         }
         
-        const positions = calculateTilePositions(collections, containerWidth, containerHeight);
+        const positions = calculateTilePositions(activeCollections, containerWidth, containerHeight);
         setTilePositions(positions);
       };
       
@@ -537,69 +542,84 @@ export default function App() {
       
       {/* 1. Viewport Tiled Grid */}
       {collections.length > 0 ? (
-        <div className="viewport-grid" style={{ position: 'relative' }}>
-          {isAutoTiling ? (
-            activeCollections.map((collName, index) => {
-              const position = tilePositions[collName] || { left: 20, top: 20, width: 350, height: 467 };
-              
-              return (
-                <div
-                  key={collName}
-                  style={{
-                    position: 'absolute',
-                    left: `${position.left}px`,
-                    top: `${position.top}px`,
-                    width: `${position.width}px`,
-                    height: `${position.height}px`
-                  }}
-                >
-                  <SlideshowTile
-                    tileId={index}
-                    collections={[collName]} // Only pass the current collection to avoid duplicates
-                    initialCollectionName={collName}
-                    globalSpeed={globalSpeed}
-                    globalIsPlaying={globalIsPlaying}
-                    globalRefreshTrigger={globalRefreshTrigger}
-                    isSingle={activeTileCount === 1}
-                    globalTransitionEffect={globalTransitionEffect}
-                    onAspectRatioChange={handleAspectRatioChange}
-                  />
-                </div>
-              );
-            })
-          ) : (
-            // Non-auto tiling mode: create windows based on tileCount
-            Array.from({ length: Math.min(tileCount, collections.length) }).map((_, index) => {
-              const collName = collections[index];
-              const position = tilePositions[collName] || { left: 20 + (index % 3) * 280, top: 20 + Math.floor(index / 3) * 380, width: 350, height: 467 };
-              
-              return (
-                <div
-                  key={collName}
-                  style={{
-                    position: 'absolute',
-                    left: `${position.left}px`,
-                    top: `${position.top}px`,
-                    width: `${position.width}px`,
-                    height: `${position.height}px`
-                  }}
-                >
-                  <SlideshowTile
-                    tileId={index}
-                    collections={collections}
-                    initialCollectionName={collName}
-                    globalSpeed={globalSpeed}
-                    globalIsPlaying={globalIsPlaying}
-                    globalRefreshTrigger={globalRefreshTrigger}
-                    isSingle={activeTileCount === 1}
-                    globalTransitionEffect={globalTransitionEffect}
-                    onAspectRatioChange={handleAspectRatioChange}
-                  />
-                </div>
-              );
-            })
-          )}
-        </div>
+        <SlideshowProvider 
+          totalTiles={activeCollections.length}
+          globalSpeed={globalSpeed}
+          globalIsPlaying={globalIsPlaying}
+          onWindowSwitch={handleWindowSwitch}
+        >
+          <div className="viewport-grid" style={{ position: 'relative' }}>
+            {isAutoTiling ? (
+              activeCollections.map((collName, index) => {
+                const position = tilePositions[collName] || { left: 20, top: 20, width: 350, height: 467 };
+                
+                return (
+                  <div
+                    key={collName}
+                    style={{
+                      position: 'absolute',
+                      left: `${position.left}px`,
+                      top: `${position.top}px`,
+                      width: `${position.width}px`,
+                      height: `${position.height}px`
+                    }}
+                  >
+                    <SlideshowTile
+                      tileId={index}
+                      totalTiles={activeCollections.length}
+                      collections={[collName]} // Only pass the current collection to avoid duplicates
+                      initialCollectionName={collName}
+                      globalSpeed={globalSpeed}
+                      globalIsPlaying={globalIsPlaying}
+                      globalRefreshTrigger={globalRefreshTrigger}
+                      isSingle={activeTileCount === 1}
+                      globalTransitionEffect={globalTransitionEffect}
+                      onAspectRatioChange={handleAspectRatioChange}
+                      onRegisterSwitchCallback={registerWindowSwitchCallback}
+                      isCoordinated={true}
+                      sortMethod={sortMethod}
+                    />
+                  </div>
+                );
+              })
+            ) : (
+              // Non-auto tiling mode: create windows based on tileCount
+              Array.from({ length: Math.min(tileCount, collections.length) }).map((_, index) => {
+                const collName = collections[index];
+                const position = tilePositions[collName] || { left: 20 + (index % 3) * 280, top: 20 + Math.floor(index / 3) * 380, width: 350, height: 467 };
+                
+                return (
+                  <div
+                    key={collName}
+                    style={{
+                      position: 'absolute',
+                      left: `${position.left}px`,
+                      top: `${position.top}px`,
+                      width: `${position.width}px`,
+                      height: `${position.height}px`
+                    }}
+                  >
+                    <SlideshowTile
+                      tileId={index}
+                      totalTiles={Math.min(tileCount, collections.length)}
+                      collections={collections}
+                      initialCollectionName={collName}
+                      globalSpeed={globalSpeed}
+                      globalIsPlaying={globalIsPlaying}
+                      globalRefreshTrigger={globalRefreshTrigger}
+                      isSingle={activeTileCount === 1}
+                      globalTransitionEffect={globalTransitionEffect}
+                      onAspectRatioChange={handleAspectRatioChange}
+                      onRegisterSwitchCallback={registerWindowSwitchCallback}
+                      isCoordinated={true}
+                      sortMethod={sortMethod}
+                    />
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </SlideshowProvider>
       ) : (
         /* Empty/Error State */
         <div style={{
