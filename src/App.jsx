@@ -1,8 +1,23 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, FolderOpen, Save, X, Settings, Image, Play, Pause, AlertTriangle, ChevronLeft, ChevronRight, Database, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { RefreshCw, FolderOpen, Save, X, Settings, Image, Play, Pause, AlertTriangle, ChevronLeft, ChevronRight, Database, Trash2, ZoomIn, ZoomOut } from 'lucide-react';
 import SlideshowTile from './components/SlideshowTile';
 import ControlHUD from './components/ControlHUD';
-import { SlideshowProvider } from './context/SlideshowContext';
+
+// Preset grid configurations for each tile count
+const GRID_PRESETS = {
+  1: { cols: 1, rows: 1 },
+  3: { cols: 3, rows: 1 },
+  5: { cols: 5, rows: 1 },
+  12: { cols: 6, rows: 2 }
+};
+
+// Allowed tile counts
+const ALLOWED_TILE_COUNTS = [1, 3, 5, 12];
+
+// Zoom slider constants
+const MIN_ZOOM = 0.3;
+const MAX_ZOOM = 1.5;
+const ZOOM_STEP = 0.05;
 
 export default function App() {
   // Load saved configuration from localStorage
@@ -23,16 +38,11 @@ export default function App() {
   const [rawCollections, setRawCollections] = useState([]);
   const [scanDirectory, setScanDirectory] = useState('');
   const [isAutoTiling, setIsAutoTiling] = useState(true);
-  const [tileCount, setTileCount] = useState(savedConfig?.tileCount || 4);
+  const [tileCount, setTileCount] = useState(savedConfig?.tileCount || 1);
   const [globalSpeed, setGlobalSpeed] = useState(savedConfig?.globalSpeed || 5000);
   const [globalIsPlaying, setGlobalIsPlaying] = useState(savedConfig?.globalIsPlaying !== undefined ? savedConfig.globalIsPlaying : true);
   const [globalRefreshTrigger, setGlobalRefreshTrigger] = useState(0);
   const [globalTransitionEffect, setGlobalTransitionEffect] = useState(savedConfig?.globalTransitionEffect || 'none');
-  
-  // Grid layout configuration
-  const [gridCols, setGridCols] = useState(savedConfig?.gridCols || 3);
-  const [gridRows, setGridRows] = useState(savedConfig?.gridRows || 2);
-  const [isGridLayoutManual, setIsGridLayoutManual] = useState(savedConfig?.isGridLayoutManual || false);
   
   // Settings drawer state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -48,34 +58,21 @@ export default function App() {
   const [cacheMessage, setCacheMessage] = useState('');
 
   const [currentPage, setCurrentPage] = useState(0);
-  const pageSize = 12; // Fixed page size for non-auto tiling mode only
+  const pageSize = 12;
 
-  const [sortMethod, setSortMethod] = useState('random'); // 'name', 'date', 'random'
+  const [sortMethod, setSortMethod] = useState('name');
   const [randomTrigger, setRandomTrigger] = useState(0);
   
-  // Tile positioning state for floating layout
+  // Tile positioning state
   const [tilePositions, setTilePositions] = useState({});
   
-  // Store aspect ratios for each collection
-  const [collectionAspectRatios, setCollectionAspectRatios] = useState({});
+  // Zoom state for the scale slider
+  const [zoomScale, setZoomScale] = useState(1);
   
-  // 窗口切换回调管理
-  const windowSwitchCallbacks = useRef({});
-  
-  // 注册窗口切换回调
-  const registerWindowSwitchCallback = useCallback((tileId, callback) => {
-    windowSwitchCallbacks.current[tileId] = callback;
-  }, []);
-  
-  // 处理窗口切换（由协调器调用）
-  const handleWindowSwitch = useCallback((tileId) => {
-    const callback = windowSwitchCallbacks.current[tileId];
-    if (callback) {
-      callback();
-    }
-  }, []);
+  // Ref for zoom slider container to capture wheel events
+  const zoomSliderRef = useRef(null);
 
-  // 1.5. Process, sort and map collections to simple array of string names for backward compatibility
+  // 1. Process, sort and map collections
   const collections = React.useMemo(() => {
     if (!rawCollections || rawCollections.length === 0) return [];
     
@@ -87,7 +84,6 @@ export default function App() {
     } else if (sortMethod === 'date') {
       result = items.sort((a, b) => b.mtime - a.mtime);
     } else if (sortMethod === 'random') {
-      // Standard stable Fisher-Yates random shuffle based on randomTrigger
       let currentIndex = items.length, randomIndex;
       while (currentIndex !== 0) {
         randomIndex = Math.floor(Math.random() * currentIndex);
@@ -99,7 +95,6 @@ export default function App() {
       result = items;
     }
     
-    // Remove duplicates by name and map to names only
     const seen = new Set();
     const unique = result.filter(item => {
       if (seen.has(item.name)) {
@@ -113,12 +108,11 @@ export default function App() {
     return unique.map(item => item.name);
   }, [rawCollections, sortMethod, randomTrigger]);
 
-  // Reset currentPage when rawCollections, sortMethod, or tileCount change
   useEffect(() => {
     setCurrentPage(0);
   }, [rawCollections, sortMethod, tileCount]);
 
-  // 1. Fetch collections from API
+  // Fetch collections from API
   const fetchCollections = async () => {
     try {
       setIsLoading(true);
@@ -146,187 +140,75 @@ export default function App() {
     fetchCollections();
   }, []);
 
-  // Save configuration to localStorage when it changes
+  // Save configuration to localStorage
   useEffect(() => {
     const config = {
       tileCount,
       globalSpeed,
       globalIsPlaying,
-      globalTransitionEffect,
-      gridCols,
-      gridRows,
-      isGridLayoutManual
+      globalTransitionEffect
     };
     try {
       localStorage.setItem('blissfulFaradayConfig', JSON.stringify(config));
     } catch (err) {
       console.warn('Failed to save config:', err);
     }
-  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, gridCols, gridRows, isGridLayoutManual]);
+  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect]);
 
-  // Auto-calculate grid layout based on collection count and screen size
-  const autoCalculateGridLayout = React.useCallback((collectionCount, containerWidth, containerHeight) => {
-    if (collectionCount === 0) return { cols: 3, rows: 2 };
-    
-    // Calculate optimal grid dimensions to fill the entire screen
-    // Allow overlapping to maximize screen utilization
-    const aspectRatio = containerWidth / containerHeight;
-    
-    // More aggressive calculation: aim for tighter packing with overlap
-    // Use a smaller divisor to create more columns/rows
-    let cols = Math.ceil(Math.sqrt(collectionCount * aspectRatio * 1.2)); // 1.2 factor for tighter packing
-    let rows = Math.ceil(collectionCount / cols);
-    
-    // Optimize to minimize empty cells while maximizing coverage
-    const totalCells = cols * rows;
-    const emptyCells = totalCells - collectionCount;
-    
-    // If we have too many empty cells, try alternative configurations
-    if (emptyCells > collectionCount * 0.2 && rows > 1) {
-      // Try reducing columns by 1
-      const altCols1 = cols - 1;
-      const altRows1 = Math.ceil(collectionCount / altCols1);
-      const altEmpty1 = (altCols1 * altRows1) - collectionCount;
-      
-      // Try increasing columns by 1
-      const altCols2 = cols + 1;
-      const altRows2 = Math.ceil(collectionCount / altCols2);
-      const altEmpty2 = (altCols2 * altRows2) - collectionCount;
-      
-      // Choose the configuration with fewer empty cells
-      if (altEmpty1 < emptyCells && altEmpty1 <= altEmpty2) {
-        cols = altCols1;
-        rows = altRows1;
-      } else if (altEmpty2 < emptyCells) {
-        cols = altCols2;
-        rows = altRows2;
-      }
-    }
-    
-    // Ensure minimum coverage: prefer more cells over fewer
-    // Check if adding one more row would reduce empty space significantly
-    if (rows > 1) {
-      const altRows = rows - 1;
-      const altCols = Math.ceil(collectionCount / altRows);
-      const altEmpty = (altCols * altRows) - collectionCount;
-      const currentEmpty = (cols * rows) - collectionCount;
-      
-      // Only reduce rows if it doesn't increase empty cells too much
-      if (altEmpty <= currentEmpty + 2) {
-        cols = altCols;
-        rows = altRows;
-      }
-    }
-    
-    // Apply reasonable limits (slightly increased for better coverage)
-    cols = Math.max(1, Math.min(16, cols));
-    rows = Math.max(1, Math.min(10, rows));
-    
-    return { cols, rows };
-  }, []);
+  // Get current grid config
+  const gridConfig = GRID_PRESETS[tileCount] || GRID_PRESETS[1];
 
-  // Auto-adjust grid layout when tileCount changes (only if user hasn't manually adjusted)
-  useEffect(() => {
-    if (collections.length > 0 && !isGridLayoutManual) {
-      let cols, rows;
-      
-      // Preset configurations for specific tile counts
-      const presets = {
-        1: { cols: 1, rows: 1 },
-        3: { cols: 3, rows: 1 },
-        5: { cols: 5, rows: 1 }, // Single row with large windows
-        12: { cols: 6, rows: 2 }
-      };
-      
-      if (presets[tileCount]) {
-        // Use preset configuration
-        cols = presets[tileCount].cols;
-        rows = presets[tileCount].rows;
-      } else {
-        // Auto-calculate for other values
-        const result = autoCalculateGridLayout(
-          tileCount,
-          window.innerWidth,
-          window.innerHeight
-        );
-        cols = result.cols;
-        rows = result.rows;
-      }
-      
-      // Only update if values actually changed
-      setGridCols(prevCols => prevCols !== cols ? cols : prevCols);
-      setGridRows(prevRows => prevRows !== rows ? rows : prevRows);
-    }
-  }, [tileCount, isAutoTiling, autoCalculateGridLayout]);
-
-  // Handle manual grid column change - mark as manual and update
-  const handleGridColsChange = (value) => {
-    setIsGridLayoutManual(true);
-    setGridCols(value);
-  };
-
-  // Handle manual grid row change - mark as manual and update
-  const handleGridRowsChange = (value) => {
-    setIsGridLayoutManual(true);
-    setGridRows(value);
-  };
-
-  // Calculate floating tile positions with overlap
-  const calculateTilePositions = React.useCallback((collections, containerWidth, containerHeight) => {
+  // Calculate tile positions - NO OVERLAP initial layout, tiles fill the screen
+  const calculateTilePositions = React.useCallback((count, containerWidth, containerHeight) => {
     const positions = {};
     
-    // Preset configurations matching pigallery.user.js
-    const presets = {
-      1: { cols: 1, rows: 1, gap: 0 },
-      3: { cols: 3, rows: 1, gap: -80 },
-      5: { cols: 5, rows: 1, gap: -100 }, // 单行排列，顶部对齐
-      12: { cols: 6, rows: 2, gap: -80 }
-    };
+    if (count === 0) return positions;
     
-    const preset = presets[collections.length];
-    if (!preset) {
-      // Fallback for other counts
-      return positions;
+    const { cols, rows } = gridConfig;
+    
+    // Calculate tile dimensions to fill the container exactly without overlap
+    const windowWidth = containerWidth / cols;
+    const windowHeight = containerHeight / rows;
+    
+    for (let i = 0; i < count; i++) {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      
+      positions[i] = {
+        left: col * windowWidth,
+        top: row * windowHeight,
+        width: windowWidth,
+        height: windowHeight,
+        // Store center position for zoom calculations
+        centerX: col * windowWidth + windowWidth / 2,
+        centerY: row * windowHeight + windowHeight / 2
+      };
     }
     
-    const { cols, rows, gap } = preset;
-    const screenW = containerWidth;
-    const screenH = containerHeight;
+    return positions;
+  }, [gridConfig]);
+
+  // Calculate scaled positions based on zoom scale (keeping center positions fixed)
+  const getScaledPositions = useCallback(() => {
+    const scaledPositions = {};
+    const containerWidth = window.innerWidth;
+    const containerHeight = window.innerHeight;
     
-    // Calculate window width based on columns and gap
-    // Formula from pigallery: w = (screenW - GAP * (MAX_COLS - 1)) / MAX_COLS
-    const w = Math.floor((screenW - gap * (cols - 1)) / cols);
-    
-    // Initial aspect ratio for height calculation (before image loads)
-    const initAspect = 2 / 3; // Default portrait aspect ratio
-    let h = Math.round(w / initAspect);
-    
-    // Limit height to screen height
-    if (h > screenH) h = screenH;
-    
-    // 垂直居中偏移量
-    const verticalCenterOffset = Math.max(0, Math.floor((screenH - h) / 2));
-    
-    collections.forEach((collName, index) => {
-      const col = index % cols;
-      const row = Math.floor(index / cols);
+    Object.entries(tilePositions).forEach(([index, pos]) => {
+      const scaledWidth = pos.width * zoomScale;
+      const scaledHeight = pos.height * zoomScale;
       
-      // 顶部对齐，垂直居中偏移
-      const topPos = verticalCenterOffset + row * (h + gap);
-      
-      // Horizontal position with gap
-      const leftPos = col * (w + gap);
-      
-      positions[collName] = {
-        left: leftPos,
-        top: topPos,
-        width: w,
-        height: h
+      // Keep the center position fixed while scaling
+      scaledPositions[index] = {
+        left: pos.centerX - scaledWidth / 2,
+        top: pos.centerY - scaledHeight / 2,
+        width: scaledWidth,
+        height: scaledHeight
       };
     });
     
-    return positions;
-  }, [collectionAspectRatios]);
+    return scaledPositions;
+  }, [tilePositions, zoomScale]);
 
   // Calculate tile positions when collections change or window resizes
   useEffect(() => {
@@ -337,46 +219,13 @@ export default function App() {
         const containerWidth = window.innerWidth;
         const containerHeight = window.innerHeight;
         
-        // Recalculate grid layout based on new screen size (only if not manually adjusted)
-        if (!isGridLayoutManual) {
-          let cols, rows;
-          
-          // Check for preset configurations
-          const presets = {
-            1: { cols: 1, rows: 1 },
-            3: { cols: 3, rows: 1 },
-            5: { cols: 5, rows: 1 },
-            12: { cols: 6, rows: 2 }
-          };
-          
-          if (presets[tileCount]) {
-            cols = presets[tileCount].cols;
-            rows = presets[tileCount].rows;
-          } else {
-            const result = autoCalculateGridLayout(
-              tileCount,
-              containerWidth,
-              containerHeight
-            );
-            cols = result.cols;
-            rows = result.rows;
-          }
-          
-          // Only update if grid dimensions changed significantly
-          if (cols !== gridCols || rows !== gridRows) {
-            setGridCols(cols);
-            setGridRows(rows);
-          }
-        }
-        
-        const positions = calculateTilePositions(activeCollections, containerWidth, containerHeight);
+        const positions = calculateTilePositions(activeCollections.length, containerWidth, containerHeight);
         setTilePositions(positions);
       };
       
-      // Debounce resize events to avoid excessive recalculations
       const handleResize = () => {
         clearTimeout(resizeTimeout);
-        resizeTimeout = setTimeout(updatePositions, 300);
+        resizeTimeout = setTimeout(updatePositions, 100);
       };
       
       updatePositions();
@@ -387,22 +236,45 @@ export default function App() {
         clearTimeout(resizeTimeout);
       };
     }
-  }, [collections, calculateTilePositions, autoCalculateGridLayout, gridCols, gridRows]);
+  }, [collections, tileCount, calculateTilePositions]);
 
-  // Handle aspect ratio updates from child components
-  const handleAspectRatioChange = React.useCallback((collName, aspectRatio) => {
-    setCollectionAspectRatios(prev => {
-      const prevRatio = prev[collName];
-      // Only update if the aspect ratio changed significantly (more than 10% difference)
-      // This prevents constant re-layout when switching between similar images
-      if (prevRatio && Math.abs(prevRatio - aspectRatio) / prevRatio < 0.1) {
-        return prev;
-      }
-      return { ...prev, [collName]: aspectRatio };
-    });
+  // Handle wheel events on zoom slider
+  const handleZoomWheel = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
+    setZoomScale(prev => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev + delta)));
   }, []);
 
-  // 2. Save new scanned directory
+  // Handle zoom slider mouse enter to capture wheel
+  useEffect(() => {
+    const slider = zoomSliderRef.current;
+    if (!slider) return;
+
+    const wheelHandler = (e) => handleZoomWheel(e);
+    
+    slider.addEventListener('wheel', wheelHandler, { passive: false });
+    
+    return () => {
+      slider.removeEventListener('wheel', wheelHandler);
+    };
+  }, [handleZoomWheel]);
+
+  // Zoom slider handlers
+  const handleZoomSliderChange = (e) => {
+    setZoomScale(parseFloat(e.target.value));
+  };
+
+  const zoomIn = () => {
+    setZoomScale(prev => Math.min(MAX_ZOOM, prev + ZOOM_STEP * 2));
+  };
+
+  const zoomOut = () => {
+    setZoomScale(prev => Math.max(MIN_ZOOM, prev - ZOOM_STEP * 2));
+  };
+
+  // Save new scanned directory
   const handleSaveDirectory = async (e) => {
     e.preventDefault();
     if (!inputScanDir.trim()) return;
@@ -421,14 +293,11 @@ export default function App() {
         throw new Error(data.error || '无法更改扫描文件夹');
       }
 
-      // Reload collections from new directory
       setScanDirectory(data.scanDirectory);
-      setRawCollections([]); // Reset current
+      setRawCollections([]);
       setIsSettingsOpen(false);
       
-      // Fetch collections
       await fetchCollections();
-      // Shuffle tiles once loaded
       shuffleAllTiles();
     } catch (err) {
       setDirError(err.message);
@@ -437,13 +306,12 @@ export default function App() {
     }
   };
 
-  // Trigger collections shuffle
   const shuffleAllTiles = () => {
     setRandomTrigger(prev => prev + 1);
     setGlobalRefreshTrigger(prev => prev + 1);
   };
 
-  // Fetch cache information
+  // Cache management
   const fetchCacheInfo = async () => {
     try {
       const res = await fetch('/api/cache/info');
@@ -457,7 +325,6 @@ export default function App() {
     }
   };
 
-  // Clear cache
   const handleClearCache = async () => {
     try {
       setIsClearingCache(true);
@@ -474,8 +341,6 @@ export default function App() {
       
       setCacheMessage('✅ 缓存已成功清除');
       setCacheInfo(null);
-      
-      // Reload collections to rebuild cache
       await fetchCollections();
     } catch (err) {
       setCacheMessage(`❌ 错误: ${err.message}`);
@@ -484,23 +349,10 @@ export default function App() {
     }
   };
 
-  // 3. Grid sizing helper to fill the viewport seamlessly (Vertical Layout)
-  const getGridLayout = (count) => {
-    if (count === 1) return { gridTemplateColumns: '1fr', gridTemplateRows: '1fr' };
-    if (count === 2) return { gridTemplateColumns: '1fr', gridTemplateRows: '1fr 1fr' };
-    if (count === 3) return { gridTemplateColumns: '1fr', gridTemplateRows: '1fr 1fr 1fr' };
-    if (count === 4) return { gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr' };
-    if (count <= 6) return { gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr 1fr' };
-    if (count <= 8) return { gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr 1fr 1fr' };
-    if (count === 9) return { gridTemplateColumns: '1fr 1fr 1fr', gridTemplateRows: '1fr 1fr 1fr' };
-    if (count <= 12) return { gridTemplateColumns: '1fr 1fr 1fr', gridTemplateRows: '1fr 1fr 1fr 1fr' };
-    return { gridTemplateColumns: '1fr 1fr 1fr 1fr', gridTemplateRows: '1fr 1fr 1fr 1fr' };
-  };
-
   const isPaginated = !isAutoTiling && collections.length > pageSize;
   const totalPages = isPaginated ? Math.ceil(collections.length / pageSize) : 1;
 
-  // Auto tiling: limit to tileCount windows if set, otherwise show all
+  // Active collections for display
   const activeCollections = isAutoTiling
     ? collections.slice(0, tileCount || collections.length)
     : (isPaginated 
@@ -508,9 +360,11 @@ export default function App() {
         : collections);
 
   const activeTileCount = isAutoTiling ? (activeCollections.length || 1) : tileCount;
-  const gridStyle = getGridLayout(activeTileCount);
 
-  // Render a nice loading screen
+  // Get scaled positions for rendering
+  const scaledPositions = zoomScale !== 1 ? getScaledPositions() : tilePositions;
+
+  // Render loading screen
   if (isLoading && collections.length === 0) {
     return (
       <div style={{
@@ -540,86 +394,38 @@ export default function App() {
   return (
     <div className="app-container">
       
-      {/* 1. Viewport Tiled Grid */}
+      {/* Viewport Tiled Grid */}
       {collections.length > 0 ? (
-        <SlideshowProvider 
-          totalTiles={activeCollections.length}
-          globalSpeed={globalSpeed}
-          globalIsPlaying={globalIsPlaying}
-          onWindowSwitch={handleWindowSwitch}
-        >
-          <div className="viewport-grid" style={{ position: 'relative' }}>
-            {isAutoTiling ? (
-              activeCollections.map((collName, index) => {
-                const position = tilePositions[collName] || { left: 20, top: 20, width: 350, height: 467 };
-                
-                return (
-                  <div
-                    key={collName}
-                    style={{
-                      position: 'absolute',
-                      left: `${position.left}px`,
-                      top: `${position.top}px`,
-                      width: `${position.width}px`,
-                      height: `${position.height}px`
-                    }}
-                  >
-                    <SlideshowTile
-                      tileId={index}
-                      totalTiles={activeCollections.length}
-                      collections={[collName]} // Only pass the current collection to avoid duplicates
-                      initialCollectionName={collName}
-                      globalSpeed={globalSpeed}
-                      globalIsPlaying={globalIsPlaying}
-                      globalRefreshTrigger={globalRefreshTrigger}
-                      isSingle={activeTileCount === 1}
-                      globalTransitionEffect={globalTransitionEffect}
-                      onAspectRatioChange={handleAspectRatioChange}
-                      onRegisterSwitchCallback={registerWindowSwitchCallback}
-                      isCoordinated={true}
-                      sortMethod={sortMethod}
-                    />
-                  </div>
-                );
-              })
-            ) : (
-              // Non-auto tiling mode: create windows based on tileCount
-              Array.from({ length: Math.min(tileCount, collections.length) }).map((_, index) => {
-                const collName = collections[index];
-                const position = tilePositions[collName] || { left: 20 + (index % 3) * 280, top: 20 + Math.floor(index / 3) * 380, width: 350, height: 467 };
-                
-                return (
-                  <div
-                    key={collName}
-                    style={{
-                      position: 'absolute',
-                      left: `${position.left}px`,
-                      top: `${position.top}px`,
-                      width: `${position.width}px`,
-                      height: `${position.height}px`
-                    }}
-                  >
-                    <SlideshowTile
-                      tileId={index}
-                      totalTiles={Math.min(tileCount, collections.length)}
-                      collections={collections}
-                      initialCollectionName={collName}
-                      globalSpeed={globalSpeed}
-                      globalIsPlaying={globalIsPlaying}
-                      globalRefreshTrigger={globalRefreshTrigger}
-                      isSingle={activeTileCount === 1}
-                      globalTransitionEffect={globalTransitionEffect}
-                      onAspectRatioChange={handleAspectRatioChange}
-                      onRegisterSwitchCallback={registerWindowSwitchCallback}
-                      isCoordinated={true}
-                      sortMethod={sortMethod}
-                    />
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </SlideshowProvider>
+        <div className="viewport-grid" style={{ position: 'relative' }}>
+          {activeCollections.map((collName, index) => {
+            const position = scaledPositions[index] || tilePositions[index] || { left: 20, top: 20, width: 350, height: 467 };
+            
+            return (
+              <div
+                key={collName}
+                style={{
+                  position: 'absolute',
+                  left: `${position.left}px`,
+                  top: `${position.top}px`,
+                  width: `${position.width}px`,
+                  height: `${position.height}px`
+                }}
+              >
+                <SlideshowTile
+                  tileId={index}
+                  collections={activeCollections}
+                  initialCollectionName={collName}
+                  globalSpeed={globalSpeed}
+                  globalIsPlaying={globalIsPlaying}
+                  globalRefreshTrigger={globalRefreshTrigger}
+                  isSingle={activeTileCount === 1}
+                  globalTransitionEffect={globalTransitionEffect}
+                  totalTiles={activeTileCount}
+                />
+              </div>
+            );
+          })}
+        </div>
       ) : (
         /* Empty/Error State */
         <div style={{
@@ -667,7 +473,93 @@ export default function App() {
         </div>
       )}
 
-      {/* Immersive Pagination Pill (Shows only in Auto Tiling when folders > pageSize) */}
+      {/* Zoom Slider - Positioned at the bottom */}
+      {collections.length > 0 && (
+        <div 
+          ref={zoomSliderRef}
+          className="zoom-slider-container"
+          style={{
+            position: 'fixed',
+            bottom: 24,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 25,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '10px 20px',
+            background: 'rgba(13, 18, 31, 0.85)',
+            backdropFilter: 'blur(12px)',
+            borderRadius: 24,
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+            cursor: 'ns-resize',
+            userSelect: 'none'
+          }}
+        >
+          <ZoomOut size={16} style={{ color: 'var(--text-secondary)' }} />
+          
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 2
+          }}>
+            <span style={{ 
+              fontSize: '0.6rem', 
+              color: 'var(--text-muted)',
+              fontWeight: 600,
+              letterSpacing: '0.05em'
+            }}>
+              缩放
+            </span>
+            <input
+              type="range"
+              min={MIN_ZOOM}
+              max={MAX_ZOOM}
+              step={ZOOM_STEP}
+              value={zoomScale}
+              onChange={handleZoomSliderChange}
+              className="zoom-slider"
+              style={{
+                width: 200,
+                cursor: 'pointer'
+              }}
+            />
+            <span style={{ 
+              fontSize: '0.65rem', 
+              color: 'var(--accent-purple)',
+              fontWeight: 600
+            }}>
+              {Math.round(zoomScale * 100)}%
+            </span>
+          </div>
+          
+          <ZoomIn size={16} style={{ color: 'var(--text-secondary)' }} />
+          
+          <div style={{
+            width: 1,
+            height: 30,
+            background: 'rgba(255, 255, 255, 0.1)',
+            margin: '0 4px'
+          }} />
+          
+          <button
+            onClick={() => setZoomScale(1)}
+            className="glass-button"
+            style={{
+              padding: '4px 10px',
+              fontSize: '0.7rem',
+              background: zoomScale === 1 ? 'rgba(139, 92, 246, 0.3)' : 'rgba(255, 255, 255, 0.05)'
+            }}
+            title="重置缩放"
+          >
+            重置
+          </button>
+        </div>
+      )}
+
+      {/* Pagination Pill */}
       {isPaginated && (
         <div className="glass-panel pagination-deck">
           <button 
@@ -694,7 +586,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 2. Floating Control HUD (Shows if collections exist) */}
+      {/* Control HUD */}
       {collections.length > 0 && (
         <ControlHUD
           tileCount={tileCount}
@@ -713,20 +605,16 @@ export default function App() {
           setGlobalTransitionEffect={setGlobalTransitionEffect}
           sortMethod={sortMethod}
           setSortMethod={setSortMethod}
-          gridCols={gridCols}
-          setGridCols={handleGridColsChange}
-          gridRows={gridRows}
-          setGridRows={handleGridRowsChange}
         />
       )}
 
-      {/* 3. Settings Drawer Backdrop */}
+      {/* Settings Drawer Backdrop */}
       <div 
         className={`drawer-backdrop ${isSettingsOpen ? 'open' : ''}`}
         onClick={() => setIsSettingsOpen(false)}
       />
 
-      {/* 4. Settings Drawer Panel (Glassmorphic) */}
+      {/* Settings Drawer Panel */}
       <div className={`glass-panel settings-drawer ${isSettingsOpen ? 'open' : ''}`}>
         <div className="drawer-header">
           <h3 className="drawer-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -756,7 +644,7 @@ export default function App() {
               required
             />
             <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginTop: 6, lineHeight: 1.4 }}>
-              * 默认扫描项目内的 <code>resources/</code> 目录。您可以指定本地电脑上的任何文件夹，系统会自动扫描该目录下包含图片的<strong>一级子目录</strong>，作为不同的播放“图片集”。
+              * 默认扫描项目内的 <code>resources/</code> 目录。您可以指定本地电脑上的任何文件夹，系统会自动扫描该目录下包含图片的<strong>一级子目录</strong>，作为不同的播放"图片集"。
             </span>
           </div>
 
@@ -786,102 +674,28 @@ export default function App() {
           </button>
         </form>
 
-        {/* Grid Layout Configuration */}
+        {/* Layout Info */}
         <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 16 }}>
           <h4 style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
             <Image size={16} />
-            网格布局配置
+            当前布局
           </h4>
-          
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-            <div>
-              <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-                列数 (Cols)
-              </label>
-              <input
-                type="number"
-                min="1"
-                max="20"
-                value={gridCols}
-                onChange={(e) => handleGridColsChange(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
-                className="glass-input"
-                style={{ width: '100%', fontSize: '0.85rem' }}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-                行数 (Rows)
-              </label>
-              <input
-                type="number"
-                min="1"
-                max="20"
-                value={gridRows}
-                onChange={(e) => handleGridRowsChange(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
-                className="glass-input"
-                style={{ width: '100%', fontSize: '0.85rem' }}
-              />
-            </div>
-          </div>
-          
-          {/* Reset button when manually adjusted */}
-          {isGridLayoutManual && (
-            <button
-              onClick={() => {
-                setIsGridLayoutManual(false);
-                // Recalculate based on tileCount with presets
-                const presets = {
-                  1: { cols: 1, rows: 1 },
-                  3: { cols: 3, rows: 1 },
-                  5: { cols: 5, rows: 1 },
-                  12: { cols: 6, rows: 2 }
-                };
-                
-                let cols, rows;
-                if (presets[tileCount]) {
-                  cols = presets[tileCount].cols;
-                  rows = presets[tileCount].rows;
-                } else {
-                  const result = autoCalculateGridLayout(
-                    tileCount,
-                    window.innerWidth,
-                    window.innerHeight
-                  );
-                  cols = result.cols;
-                  rows = result.rows;
-                }
-                setGridCols(cols);
-                setGridRows(rows);
-              }}
-              style={{
-                width: '100%',
-                marginTop: 12,
-                padding: '8px 12px',
-                background: 'rgba(59, 130, 246, 0.2)',
-                border: '1px solid rgba(59, 130, 246, 0.4)',
-                borderRadius: 6,
-                color: '#60a5fa',
-                fontSize: '0.75rem',
-                cursor: 'pointer',
-                transition: 'all 0.2s'
-              }}
-              onMouseEnter={(e) => e.target.style.background = 'rgba(59, 130, 246, 0.3)'}
-              onMouseLeave={(e) => e.target.style.background = 'rgba(59, 130, 246, 0.2)'}
-            >
-              🔄 恢复自动计算布局
-            </button>
-          )}
           
           <div style={{  
             background: 'rgba(139, 92, 246, 0.1)', 
             border: '1px solid rgba(139, 92, 246, 0.2)',
             borderRadius: 6, 
             padding: 10,
-            fontSize: '0.7rem',
+            fontSize: '0.75rem',
             color: 'var(--text-secondary)',
-            lineHeight: 1.5
+            lineHeight: 1.6
           }}>
-            💡 提示：窗口大小会根据屏幕尺寸和布局配置自动调整，以平衡填充效果和图片显示质量。
+            <div style={{ marginBottom: 6 }}>
+              <strong>分屏模式:</strong> {tileCount} 窗口 ({gridConfig.cols}×{gridConfig.rows})
+            </div>
+            <div style={{ color: 'var(--text-muted)' }}>
+              💡 使用底部缩放条调整窗口大小，滚轮仅在缩放条上生效
+            </div>
           </div>
         </div>
 
@@ -1008,17 +822,11 @@ export default function App() {
           <h4 style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>快捷扫描预设:</h4>
           <button
             onClick={() => {
-              // Reset back to workspace 'resources' folder
-              setInputScanDir(path => {
-                // Let's set it to empty/default which the server resolves to original resources
-                const defaultDir = window.location.origin; // server will reset it
-                return '';
-              });
-              // Simple reload trick
+              setInputScanDir('');
               fetch('/api/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ scanDirectory: 'RESET_TO_DEFAULT' }) // We can handle this in server or send original
+                body: JSON.stringify({ scanDirectory: 'RESET_TO_DEFAULT' })
               }).then(() => fetchCollections());
             }}
             className="glass-button"

@@ -155,6 +155,62 @@ html, body, #root, .app-container {
   background: var(--text-primary);
 }
 
+/* Zoom Slider Styles */
+.zoom-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(to right, rgba(139, 92, 246, 0.3) 0%, rgba(139, 92, 246, 0.6) 100%);
+  outline: none;
+  transition: var(--transition-smooth);
+}
+
+.zoom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-purple);
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(139, 92, 246, 0.5);
+  transition: var(--transition-smooth);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+.zoom-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  background: #a78bfa;
+  box-shadow: 0 0 15px rgba(139, 92, 246, 0.7);
+}
+
+.zoom-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-purple);
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(139, 92, 246, 0.5);
+  transition: var(--transition-smooth);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+.zoom-slider::-moz-range-thumb:hover {
+  transform: scale(1.15);
+  background: #a78bfa;
+}
+
+.zoom-slider-container {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.zoom-slider-container:hover {
+  border-color: rgba(139, 92, 246, 0.4);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 20px rgba(139, 92, 246, 0.2);
+}
+
 /* Main Tiled Grid Viewport */
 .app-container {
   display: flex;
@@ -265,7 +321,7 @@ html, body, #root, .app-container {
   position: relative;
   width: 100%;
   height: 100%;
-  object-fit: cover; /* Changed from contain to cover for no black borders */
+  object-fit: contain; /* Keep original aspect ratio, allow black bars */
   z-index: 1;
 }
 

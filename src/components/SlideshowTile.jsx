@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, Pause, ChevronRight, ChevronLeft, Maximize2, Minimize2, Settings, Shuffle, HelpCircle } from 'lucide-react';
-import { useSlideshow } from '../context/SlideshowContext';
 
 export default function SlideshowTile({
   tileId,
@@ -12,13 +11,8 @@ export default function SlideshowTile({
   isSingle,
   globalTransitionEffect,
   onAspectRatioChange,
-  totalTiles,
-  onRegisterSwitchCallback,
-  isCoordinated,
-  sortMethod
+  totalTiles
 }) {
-  // 使用 Slideshow Context（如果可用）
-  const slideshowCtx = useSlideshow();
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [images, setImages] = useState([]);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -31,6 +25,10 @@ export default function SlideshowTile({
   const [progressBarReset, setProgressBarReset] = useState(false);
   const [isWheelPaused, setIsWheelPaused] = useState(false);
 
+  // Drag functionality state
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
+
   const transitionEffect = localTransitionEffect || globalTransitionEffect || 'none';
 
   const timerRef = useRef(null);
@@ -39,42 +37,10 @@ export default function SlideshowTile({
   const lastWheelTimeRef = useRef(0);
   const shouldStartFromLastRef = useRef(false);
   const wheelPauseTimeoutRef = useRef(null);
-  const isImageLoadedRef = useRef(false);
-  
-  // 播放历史追踪 - 记录该窗口已播放过的文件夹
-  const playedCollectionsRef = useRef(new Set());
-  
-  // 根据排序方式获取下一个未播放过的文件夹
-  const getNextUnplayedCollection = (currentCollName) => {
-    const allColls = collectionsRef.current;
-    const playedSet = playedCollectionsRef.current;
-    
-    if (allColls.length <= 1) return currentCollName;
-    
-    // 找出未播放过的文件夹
-    const unplayedColls = allColls.filter(name => !playedSet.has(name) && name !== currentCollName);
-    
-    if (unplayedColls.length > 0) {
-      // 有未播放过的文件夹，按排序方式选择
-      if (sortMethod === 'name') {
-        // 按名称排序选择
-        return [...unplayedColls].sort((a, b) => a.localeCompare(b, 'zh-CN'))[0];
-      } else if (sortMethod === 'date') {
-        // 按日期排序 - 需要获取 mtime
-        // 简化处理：按名称排序（因为我们只有名称，没有 mtime）
-        return [...unplayedColls].sort((a, b) => a.localeCompare(b, 'zh-CN'))[0];
-      } else {
-        // 随机选择
-        return unplayedColls[Math.floor(Math.random() * unplayedColls.length)];
-      }
-    }
-    
-    // 所有文件夹都播放过了，重置历史并选择下一个（按顺序）
-    playedCollectionsRef.current.clear();
-    const currentIdx = allColls.indexOf(currentCollName);
-    const nextIdx = (currentIdx + 1) % allColls.length;
-    return allColls[nextIdx];
-  };
+
+  // Drag refs
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const positionRef = useRef({ x: 0, y: 0 });
 
   const activeIdxRef = useRef(activeIdx);
   const imagesRef = useRef(images);
@@ -82,16 +48,6 @@ export default function SlideshowTile({
   const collectionsRef = useRef(collections);
   
   const [barDuration, setBarDuration] = useState(globalSpeed);
-  
-  // 注册切换回调到父组件
-  useEffect(() => {
-    if (onRegisterSwitchCallback) {
-      onRegisterSwitchCallback(tileId, () => {
-        advanceSlide(1);
-        resetProgressBar();
-      });
-    }
-  }, [tileId, onRegisterSwitchCallback]);
 
   // Sync refs with state values
   useEffect(() => {
@@ -166,7 +122,6 @@ export default function SlideshowTile({
 
     const fetchImages = async () => {
       try {
-        isImageLoadedRef.current = false;
         setIsLoadingImages(true);
         setLoadError('');
         const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}`);
@@ -206,18 +161,8 @@ export default function SlideshowTile({
       } catch (err) {
         console.error(err);
         setLoadError(err.message);
-        // 加载失败，通知 Context
-        if (slideshowCtx?.registerWindow && !isCoordinated) {
-          slideshowCtx.registerWindow(tileId, false);
-        }
       } finally {
         setIsLoadingImages(false);
-        const loadSuccess = !loadError;
-        isImageLoadedRef.current = loadSuccess;
-        // 通知 Context 加载状态
-        if (slideshowCtx?.registerWindow) {
-          slideshowCtx.registerWindow(tileId, loadSuccess && images.length > 0);
-        }
       }
     };
 
@@ -256,26 +201,20 @@ export default function SlideshowTile({
     setTimeout(() => setProgressBarReset(false), 20);
   };
 
-  // Sync barDuration with globalSpeed changes unless in stagger phase
+  // Sync barDuration with duration changes unless in stagger phase
   useEffect(() => {
-    const switchInterval = totalTiles > 0 ? globalSpeed / totalTiles : globalSpeed;
     if (staggerAppliedRef.current || totalTiles <= 1) {
-      setBarDuration(switchInterval);
+      setBarDuration(duration);
     }
-  }, [globalSpeed, totalTiles]);
+  }, [duration, totalTiles]);
 
-  // Reset stagger applied ref when play state or globalSpeed or totalTiles changes
+  // Reset stagger applied ref when play state or duration or totalTiles changes
   useEffect(() => {
     staggerAppliedRef.current = false;
-  }, [isPlaying, globalSpeed, totalTiles]);
+  }, [isPlaying, duration, totalTiles]);
 
   // 2. Playback logic: Slide advancing interval with sequential stagger delay
   useEffect(() => {
-    // 在协调模式下，由父组件的协调器控制切换，本地不启动定时器
-    if (isCoordinated) {
-      return;
-    }
-    
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -285,39 +224,111 @@ export default function SlideshowTile({
       staggerTimeoutRef.current = null;
     }
 
-    // 只有当播放开启、图片已加载、且有多张图片时才启动定时器
-    if (globalIsPlaying && localIsPlaying && !isWheelPaused && isImageLoadedRef.current && images.length > 1) {
-      // 每个窗口的切换间隔 = 总时间 / 窗口数
-      const switchInterval = totalTiles > 0 ? globalSpeed / totalTiles : globalSpeed;
-      
-      // 调试日志
-      console.log(`[Tile ${tileId}] switchInterval: ${switchInterval}ms, globalSpeed: ${globalSpeed}ms, totalTiles: ${totalTiles}`);
-      
-      // 每个窗口的启动延迟 = 窗口索引 * 切换间隔
-      const staggerDelay = tileId * switchInterval;
-      
-      // 设置进度条初始 duration（用于 stagger 阶段的显示）
-      setBarDuration(staggerDelay > 0 ? staggerDelay : switchInterval);
-      resetProgressBar();
-
-      // 等待 stagger 延迟后切换
-      staggerTimeoutRef.current = setTimeout(() => {
-        advanceSlide(1);
+    if (isPlaying) {
+      // Stagger delay: distribute windows evenly across the global speed cycle
+      // Each window starts at a different time so they refresh sequentially
+      // All windows will refresh once within globalSpeed milliseconds
+      const staggerDelay = tileId * (globalSpeed / totalTiles);
+      if (!staggerAppliedRef.current && totalTiles > 1 && staggerDelay > 0) {
+        // Set progress bar duration to the stagger delay for the first tick
+        setBarDuration(staggerDelay);
         resetProgressBar();
-        
-        // 之后每个切换间隔循环
+
+        staggerTimeoutRef.current = setTimeout(() => {
+          staggerAppliedRef.current = true;
+          advanceSlide(1);
+          setBarDuration(duration);
+          resetProgressBar();
+          
+          timerRef.current = setInterval(() => {
+            advanceSlide(1);
+            resetProgressBar();
+          }, duration);
+        }, staggerDelay);
+      } else {
+        // No stagger or stagger already applied
+        setBarDuration(duration);
         timerRef.current = setInterval(() => {
           advanceSlide(1);
           resetProgressBar();
-        }, switchInterval);
-      }, staggerDelay);
+        }, duration);
+      }
     }
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (staggerTimeoutRef.current) clearTimeout(staggerTimeoutRef.current);
     };
-  }, [globalIsPlaying, localIsPlaying, globalSpeed, totalTiles, tileId, isWheelPaused, images.length]);
+  }, [isPlaying, duration, totalTiles, tileId, images.length]);
+
+  // Skip to next collection directly (for middle-click)
+  const skipToNextCollection = () => {
+    const allColls = collectionsRef.current;
+    if (allColls.length <= 1) return;
+    
+    const currentCollNameVal = currentCollNameRef.current;
+    const currentIdxInCollections = allColls.indexOf(currentCollNameVal);
+    
+    if (currentIdxInCollections !== -1) {
+      const nextCollIdx = (currentIdxInCollections + 1) % allColls.length;
+      const nextCollName = allColls[nextCollIdx];
+      
+      setCurrentCollName(nextCollName);
+      setActiveIdx(0);
+      setOutgoingIdx(null);
+      resetProgressBar();
+    }
+  };
+
+  // Middle-click handler to skip to next folder
+  const handleMouseDown = (e) => {
+    // Middle mouse button = 1
+    if (e.button === 1) {
+      e.preventDefault();
+      skipToNextCollection();
+      return;
+    }
+    
+    // Left mouse button for drag
+    if (e.button === 0) {
+      // Start drag from mouse down position
+      dragStartRef.current = { x: e.clientX, y: e.clientY };
+      positionRef.current = { x: dragPosition.x, y: dragPosition.y };
+      setIsDragging(true);
+    }
+  };
+
+  // Mouse move handler for drag
+  const handleMouseMove = (e) => {
+    if (!isDragging) return;
+    
+    const deltaX = e.clientX - dragStartRef.current.x;
+    const deltaY = e.clientY - dragStartRef.current.y;
+    
+    const newX = positionRef.current.x + deltaX;
+    const newY = positionRef.current.y + deltaY;
+    
+    setDragPosition({ x: newX, y: newY });
+  };
+
+  // Mouse up handler to end drag
+  const handleMouseUp = (e) => {
+    if (e.button === 0 && isDragging) {
+      setIsDragging(false);
+    }
+  };
+
+  // Mouse leave handler
+  const handleMouseLeave = () => {
+    if (isDragging) {
+      setIsDragging(false);
+    }
+    if (wheelPauseTimeoutRef.current) {
+      clearTimeout(wheelPauseTimeoutRef.current);
+      wheelPauseTimeoutRef.current = null;
+    }
+    setIsWheelPaused(false);
+  };
 
   const advanceSlide = (direction) => {
     const currentImages = imagesRef.current;
@@ -328,21 +339,24 @@ export default function SlideshowTile({
     
     let nextIdx = currentIdx + direction;
     if (nextIdx >= currentImages.length) {
-      // Finished the current folder, select next unplayed collection!
+      // Finished the current folder, cycle to the next collection!
       const currentCollNameVal = currentCollNameRef.current;
+      const allColls = collectionsRef.current;
+      const currentIdxInCollections = allColls.indexOf(currentCollNameVal);
       
-      // 记录当前文件夹已播放过
-      playedCollectionsRef.current.add(currentCollNameVal);
-      
-      // 按排序方式获取下一个未播放的文件夹
-      const nextCollName = getNextUnplayedCollection(currentCollNameVal);
-      console.log(`[Tile ${tileId}] Finished folder "${currentCollNameVal}", next: "${nextCollName}"`);
-      
-      setCurrentCollName(nextCollName);
-      setActiveIdx(0);
-      setOutgoingIdx(null);
-      resetProgressBar();
-      return;
+      if (currentIdxInCollections !== -1 && allColls.length > 1) {
+        const nextCollIdx = (currentIdxInCollections + 1) % allColls.length;
+        const nextCollName = allColls[nextCollIdx];
+        
+        setCurrentCollName(nextCollName);
+        setActiveIdx(0);
+        setOutgoingIdx(null);
+        resetProgressBar();
+        return;
+      } else {
+        // Fallback to loop if 1 collection
+        nextIdx = 0;
+      }
     } else if (nextIdx < 0) {
       // Going backwards past 0: cycle to previous collection's last image!
       const currentCollNameVal = currentCollNameRef.current;
@@ -376,6 +390,9 @@ export default function SlideshowTile({
 
   // 2.5. Wheel scroll handler to navigate images (with throttle and autoplay pause)
   const handleWheel = (e) => {
+    // Skip wheel if currently dragging
+    if (isDragging) return;
+    
     const now = Date.now();
     // Throttle to 1 slide per 150ms to prevent fast skipping
     if (now - lastWheelTimeRef.current < 150) {
@@ -407,34 +424,20 @@ export default function SlideshowTile({
     }
   };
 
-  // Immediate resume on mouse leave
-  const handleMouseLeave = () => {
-    if (wheelPauseTimeoutRef.current) {
-      clearTimeout(wheelPauseTimeoutRef.current);
-      wheelPauseTimeoutRef.current = null;
-    }
-    setIsWheelPaused(false);
+  // Calculate aspect-ratio adapted width and height
+  // Note: Parent container size is already calculated in App.jsx with proper overlap
+  // So we just use 100% to fill the parent container
+  const tileStyle = {
+    width: '100%',
+    height: '100%'
   };
 
-  // 3. Image Preloader (Preloads next/prev image in the collection)
-  useEffect(() => {
-    if (images.length <= 1) return;
-    
-    // Preload next image
-    const nextIdx = (activeIdx + 1) % images.length;
-    const nextImgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(images[nextIdx])}`;
-    const imgNext = new Image();
-    imgNext.src = nextImgUrl;
+  // Drag transform style
+  const dragTransform = isDragging
+    ? { transform: `translate(${dragPosition.x}px, ${dragPosition.y}px)`, zIndex: 1000, cursor: 'grabbing' }
+    : {};
 
-    // Preload previous image
-    const prevIdx = (activeIdx - 1 + images.length) % images.length;
-    const prevImgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(images[prevIdx])}`;
-    const imgPrev = new Image();
-    imgPrev.src = prevImgUrl;
-  }, [activeIdx, images, currentCollName]);
-
-
-  // Safe image path generation
+  // Helper function for image URL
   const getImageUrl = (imgName) => {
     return `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(imgName)}`;
   };
@@ -444,14 +447,6 @@ export default function SlideshowTile({
     setActiveIdx(0);
     setOutgoingIdx(null);
     resetProgressBar();
-  };
-
-  // Calculate aspect-ratio adapted width and height
-  // Note: Parent container size is already calculated in App.jsx with proper overlap
-  // So we just use 100% to fill the parent container
-  const tileStyle = {
-    width: '100%',
-    height: '100%'
   };
 
   if (collections.length === 0) {
@@ -469,8 +464,11 @@ export default function SlideshowTile({
     <div 
       ref={tileRef}
       className={`slideshow-tile effect-${transitionEffect} ${isMaximized ? 'maximized' : ''} ${showConfig ? 'show-controls' : ''}`}
-      style={tileStyle}
+      style={{ ...tileStyle, ...dragTransform }}
       onWheel={handleWheel}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseLeave}
     >
       

@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Pause, Shuffle, Settings, Columns, Image, Sliders, ChevronUp, ChevronDown, Sparkles } from 'lucide-react';
 
+// Allowed tile counts
+const ALLOWED_TILE_COUNTS = [1, 3, 5, 12];
+
 export default function ControlHUD({
   tileCount,
   setTileCount,
@@ -17,26 +20,20 @@ export default function ControlHUD({
   globalTransitionEffect,
   setGlobalTransitionEffect,
   sortMethod,
-  setSortMethod,
-  gridCols,
-  setGridCols,
-  gridRows,
-  setGridRows
+  setSortMethod
 }) {
   const [isHovered, setIsHovered] = useState(false);
   const [isPinned, setIsPinned] = useState(true);
 
-  // Convert speed in ms to seconds for UI
   const speedInSeconds = globalSpeed / 1000;
 
-  // Auto-hide HUD after 3 seconds of inactivity if not hovered and not pinned
   useEffect(() => {
     if (isPinned) return;
     
     let timeout;
     if (!isHovered) {
       timeout = setTimeout(() => {
-        // We handle auto-hiding by adding classes in CSS
+        // Auto-hide handled by CSS
       }, 3000);
     }
     return () => clearTimeout(timeout);
@@ -44,13 +41,13 @@ export default function ControlHUD({
 
   return (
     <>
-      {/* Immersive HUD Trigger Zone */}
+      {/* HUD Trigger Zone */}
       <div 
         className="hud-trigger-zone" 
         onMouseEnter={() => setIsHovered(true)}
       />
 
-      {/* Main Glassmorphic Control Deck */}
+      {/* Main Control Deck */}
       <div 
         className={`glass-panel hud-container ${(!isPinned && !isHovered) ? 'hidden' : ''}`}
         onMouseEnter={() => setIsHovered(true)}
@@ -68,7 +65,7 @@ export default function ControlHUD({
           </div>
         </div>
 
-        {/* 1. Grid Tile Count Adjustment with Mode Toggles */}
+        {/* Grid Tile Count Adjustment */}
         <div className="hud-section">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
@@ -110,40 +107,20 @@ export default function ControlHUD({
                   }}
                   title="手动调整平铺播放窗口数量"
                 >
-                  自定义网格 ({tileCount})
+                  自定义网格
                 </button>
               </div>
             </div>
 
-            {/* Slider & Presets Control Area */}
+            {/* Preset Buttons - Only 1, 3, 5, 12 */}
             <div style={{ 
               display: 'flex', 
               alignItems: 'center', 
-              gap: 10,
-              transition: 'var(--transition-smooth)'
+              gap: 8
             }}>
-              <input
-                type="range"
-                min="1"
-                max="16"
-                value={tileCount}
-                onChange={(e) => setTileCount(parseInt(e.target.value))}
-                className="glass-slider"
-                style={{ width: '100px' }}
-              />
-              {/* Current count display */}
-              <span style={{ 
-                fontSize: '0.75rem', 
-                fontWeight: 'bold', 
-                color: 'var(--accent-purple)',
-                minWidth: '20px',
-                textAlign: 'center'
-              }}>
-                {tileCount}
-              </span>
-              {/* Presets */}
+              <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>窗口数:</span>
               <div style={{ display: 'flex', gap: 4 }}>
-                {[1, 3, 5, 12].map(num => (
+                {ALLOWED_TILE_COUNTS.map(num => (
                   <button
                     key={num}
                     onClick={() => setTileCount(num)}
@@ -151,58 +128,26 @@ export default function ControlHUD({
                       background: tileCount === num ? 'var(--accent-purple)' : 'rgba(255,255,255,0.05)',
                       border: '1px solid rgba(255,255,255,0.08)',
                       color: '#fff',
-                      fontSize: '0.65rem',
-                      padding: '2px 6px',
-                      borderRadius: '4px',
+                      fontSize: '0.7rem',
+                      padding: '4px 10px',
+                      borderRadius: '6px',
                       cursor: 'pointer',
-                      fontWeight: tileCount === num ? 'bold' : 'normal'
+                      fontWeight: tileCount === num ? 'bold' : 'normal',
+                      transition: 'var(--transition-smooth)'
                     }}
+                    title={`${num}个子窗口`}
                   >
                     {num}
                   </button>
                 ))}
               </div>
-            </div>
-
-            {/* Grid Layout Configuration */}
-            <div style={{ 
-              display: 'grid', 
-              gridTemplateColumns: '1fr 1fr', 
-              gap: 8,
-              marginTop: 8,
-              padding: '8px',
-              background: 'rgba(139, 92, 246, 0.05)',
-              borderRadius: '6px',
-              border: '1px solid rgba(139, 92, 246, 0.1)'
-            }}>
-              <div>
-                <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
-                  列数 (Cols)
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="20"
-                  value={gridCols}
-                  onChange={(e) => setGridCols(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
-                  className="glass-input"
-                  style={{ width: '100%', fontSize: '0.75rem', padding: '4px 6px' }}
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
-                  行数 (Rows)
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="20"
-                  value={gridRows}
-                  onChange={(e) => setGridRows(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
-                  className="glass-input"
-                  style={{ width: '100%', fontSize: '0.75rem', padding: '4px 6px' }}
-                />
-              </div>
+              <span style={{ 
+                fontSize: '0.65rem', 
+                color: 'var(--text-muted)',
+                marginLeft: 4
+              }}>
+                ({tileCount === 1 ? '1×1' : tileCount === 3 ? '3×1' : tileCount === 5 ? '5×1' : '6×2'})
+              </span>
             </div>
 
             {/* Folder Sorting Selectors */}
@@ -254,7 +199,7 @@ export default function ControlHUD({
           </div>
         </div>
 
-        {/* 2. Global Slideshow Playback Controls */}
+        {/* Global Slideshow Playback Controls */}
         <div className="hud-section">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
@@ -262,7 +207,7 @@ export default function ControlHUD({
                 <Sliders size={12} /> 幻灯片自动播放
               </span>
               
-              {/* Premium Toggle Switch */}
+              {/* Toggle Switch */}
               <div 
                 onClick={() => setGlobalIsPlaying(!globalIsPlaying)}
                 style={{
@@ -349,12 +294,12 @@ export default function ControlHUD({
               opacity: globalIsPlaying ? 1 : 0.4,
               transition: 'var(--transition-smooth)'
             }}>
-              💡 切换间隔 = 周期 ÷ 窗口数。如 5 秒 5 窗口，每个窗口每 1 秒切换一张图，依次顺次更新。
+              💡 所有子窗口轮流播放一张合计用时。如设为 5 秒，则所有窗口在 5 秒内依次顺次更新一张图片。
             </div>
           </div>
         </div>
 
-        {/* 3. Global Transition Animation Effect */}
+        {/* Global Transition Animation Effect */}
         <div className="hud-section">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -391,7 +336,7 @@ export default function ControlHUD({
           </div>
         </div>
 
-        {/* 4. Global Action Commands */}
+        {/* Global Action Commands */}
         <div className="hud-section" style={{ gap: 8 }}>
           <button
             className={`glass-button ${globalIsPlaying ? 'active' : ''}`}
@@ -424,7 +369,7 @@ export default function ControlHUD({
           </button>
         </div>
 
-        {/* 4. PIN/HIDE HUD control */}
+        {/* PIN/HIDE HUD control */}
         <div style={{ 
           display: 'flex', 
           alignItems: 'center', 
