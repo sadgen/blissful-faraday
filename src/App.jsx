@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { RefreshCw, FolderOpen, Save, X, Settings, Image, Play, Pause, AlertTriangle, ChevronLeft, ChevronRight, Database, Trash2, ZoomIn, ZoomOut } from 'lucide-react';
+import { RefreshCw, FolderOpen, Save, X, Settings, Image, Play, Pause, AlertTriangle, ChevronLeft, ChevronRight, Database, Trash2, ZoomIn, ZoomOut, Sparkles } from 'lucide-react';
 import SlideshowTile from './components/SlideshowTile';
 import ControlHUD from './components/ControlHUD';
 
@@ -19,6 +19,9 @@ const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 1.5;
 const ZOOM_STEP = 0.05;
 
+// HUD bar height (for bottom bar)
+const HUD_HEIGHT = 50;
+
 export default function App() {
   // Load saved configuration from localStorage
   const loadSavedConfig = () => {
@@ -37,7 +40,7 @@ export default function App() {
 
   const [rawCollections, setRawCollections] = useState([]);
   const [scanDirectory, setScanDirectory] = useState('');
-  const [isAutoTiling, setIsAutoTiling] = useState(true);
+  const [isAutoTiling, setIsAutoTiling] = useState(savedConfig?.isAutoTiling !== undefined ? savedConfig.isAutoTiling : true);
   const [tileCount, setTileCount] = useState(savedConfig?.tileCount || 1);
   const [globalSpeed, setGlobalSpeed] = useState(savedConfig?.globalSpeed || 5000);
   const [globalIsPlaying, setGlobalIsPlaying] = useState(savedConfig?.globalIsPlaying !== undefined ? savedConfig.globalIsPlaying : true);
@@ -60,14 +63,20 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(0);
   const pageSize = 12;
 
-  const [sortMethod, setSortMethod] = useState('name');
+  const [sortMethod, setSortMethod] = useState(savedConfig?.sortMethod || 'random');
   const [randomTrigger, setRandomTrigger] = useState(0);
   
   // Tile positioning state
   const [tilePositions, setTilePositions] = useState({});
   
+  // Tile aspect ratios for adaptive sizing
+  const [tileAspectRatios, setTileAspectRatios] = useState({});
+  
   // Zoom state for the scale slider
-  const [zoomScale, setZoomScale] = useState(1);
+  const [zoomScale, setZoomScale] = useState(savedConfig?.zoomScale || 1);
+  
+  // HUD pinned state (whether the HUD bar is always visible)
+  const [isHUDpinned, setIsHUDpinned] = useState(savedConfig?.isHUDpinned !== undefined ? savedConfig.isHUDpinned : true);
   
   // Ref for zoom slider container to capture wheel events
   const zoomSliderRef = useRef(null);
@@ -146,19 +155,32 @@ export default function App() {
       tileCount,
       globalSpeed,
       globalIsPlaying,
-      globalTransitionEffect
+      globalTransitionEffect,
+      sortMethod,
+      isAutoTiling,
+      zoomScale,
+      isHUDpinned
     };
     try {
       localStorage.setItem('blissfulFaradayConfig', JSON.stringify(config));
     } catch (err) {
       console.warn('Failed to save config:', err);
     }
-  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect]);
+  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, sortMethod, isAutoTiling, zoomScale, isHUDpinned]);
 
   // Get current grid config
   const gridConfig = GRID_PRESETS[tileCount] || GRID_PRESETS[1];
 
-  // Calculate tile positions - NO OVERLAP initial layout, tiles fill the screen
+  // Handle aspect ratio change from tiles - shrink height for landscape images
+  const handleAspectRatioChange = useCallback((tileId, aspectRatio) => {
+    setTileAspectRatios(prev => ({
+      ...prev,
+      [tileId]: aspectRatio
+    }));
+  }, []);
+
+  // Calculate tile positions - adaptive height based on aspect ratio
+  // Width is determined by layout, then height is calculated from aspect ratio
   const calculateTilePositions = React.useCallback((count, containerWidth, containerHeight) => {
     const positions = {};
     
@@ -166,49 +188,89 @@ export default function App() {
     
     const { cols, rows } = gridConfig;
     
-    // Calculate tile dimensions to fill the container exactly without overlap
-    const windowWidth = containerWidth / cols;
-    const windowHeight = containerHeight / rows;
+    // Calculate available height (subtract HUD bar height)
+    const availableHeight = containerHeight - HUD_HEIGHT;
+    
+    // Base tile dimensions from layout
+    const baseWidth = containerWidth / cols;
+    const baseHeight = availableHeight / rows;
     
     for (let i = 0; i < count; i++) {
       const col = i % cols;
       const row = Math.floor(i / cols);
       
+      // Get aspect ratio for this tile (default to 16:9 = 1.78)
+      const aspectRatio = tileAspectRatios[i] || 1.78;
+      
+      // Calculate height based on width and aspect ratio
+      // Height = Width / AspectRatio
+      const calculatedHeight = baseWidth / aspectRatio;
+      
+      // Use the smaller of base height or calculated height (to fit in cell)
+      const adjustedHeight = Math.min(baseHeight, calculatedHeight);
+      
+      // Calculate vertical offset to center the tile within the cell
+      const verticalOffset = (baseHeight - adjustedHeight) / 2;
+      
+      const baseLeft = col * baseWidth;
+      const baseTop = row * baseHeight;
+      
       positions[i] = {
-        left: col * windowWidth,
-        top: row * windowHeight,
-        width: windowWidth,
-        height: windowHeight,
-        // Store center position for zoom calculations
-        centerX: col * windowWidth + windowWidth / 2,
-        centerY: row * windowHeight + windowHeight / 2
+        left: baseLeft,
+        top: baseTop + verticalOffset,
+        width: baseWidth,
+        height: adjustedHeight,
+        // Store base dimensions for zoom calculations
+        baseWidth: baseWidth,
+        baseHeight: adjustedHeight
       };
     }
     
     return positions;
-  }, [gridConfig]);
+  }, [gridConfig, tileAspectRatios]);
 
-  // Calculate scaled positions based on zoom scale (keeping center positions fixed)
+  // Calculate scaled positions based on zoom scale
+  // Only scale width, recalculate height based on aspect ratio
   const getScaledPositions = useCallback(() => {
     const scaledPositions = {};
-    const containerWidth = window.innerWidth;
-    const containerHeight = window.innerHeight;
     
     Object.entries(tilePositions).forEach(([index, pos]) => {
-      const scaledWidth = pos.width * zoomScale;
-      const scaledHeight = pos.height * zoomScale;
+      // Get aspect ratio from tileAspectRatios
+      const aspectRatio = tileAspectRatios[index] || 1.78;
       
-      // Keep the center position fixed while scaling
+      // Scale only the width
+      const scaledWidth = pos.baseWidth * zoomScale;
+      
+      // Recalculate height based on aspect ratio: height = width / aspectRatio
+      const calculatedHeight = scaledWidth / aspectRatio;
+      
+      // Get the baseHeight from the cell (available height per row)
+      const containerHeight = window.innerHeight;
+      const { cols, rows } = gridConfig;
+      const availableHeight = containerHeight - HUD_HEIGHT;
+      const baseHeight = availableHeight / rows;
+      
+      // Use the smaller of cell height or calculated height
+      const scaledHeight = Math.min(baseHeight, calculatedHeight);
+      
+      // Keep left position aligned with grid column
+      // Adjust top to center within the cell
+      const verticalOffset = (baseHeight - scaledHeight) / 2;
+      const col = index % cols;
+      const row = Math.floor(index / cols);
+      const baseWidth = window.innerWidth / cols;
+      
       scaledPositions[index] = {
-        left: pos.centerX - scaledWidth / 2,
-        top: pos.centerY - scaledHeight / 2,
+        left: col * baseWidth,
+        top: row * baseHeight + verticalOffset,
         width: scaledWidth,
-        height: scaledHeight
+        height: scaledHeight,
+        baseWidth: pos.baseWidth
       };
     });
     
     return scaledPositions;
-  }, [tilePositions, zoomScale]);
+  }, [tilePositions, zoomScale, tileAspectRatios, gridConfig]);
 
   // Calculate tile positions when collections change or window resizes
   useEffect(() => {
@@ -219,7 +281,11 @@ export default function App() {
         const containerWidth = window.innerWidth;
         const containerHeight = window.innerHeight;
         
-        const positions = calculateTilePositions(activeCollections.length, containerWidth, containerHeight);
+        const count = isAutoTiling
+          ? Math.min(tileCount || collections.length, collections.length)
+          : Math.min(tileCount, collections.length);
+        
+        const positions = calculateTilePositions(count, containerWidth, containerHeight);
         setTilePositions(positions);
       };
       
@@ -236,30 +302,59 @@ export default function App() {
         clearTimeout(resizeTimeout);
       };
     }
-  }, [collections, tileCount, calculateTilePositions]);
+  }, [collections, tileCount, isAutoTiling, calculateTilePositions]);
 
-  // Handle wheel events on zoom slider
-  const handleZoomWheel = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
-    setZoomScale(prev => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev + delta)));
-  }, []);
-
-  // Handle zoom slider mouse enter to capture wheel
+  // Recalculate positions when aspect ratios change
   useEffect(() => {
+    if (collections.length > 0 && Object.keys(tileAspectRatios).length > 0) {
+      const containerWidth = window.innerWidth;
+      const containerHeight = window.innerHeight;
+      
+      const count = isAutoTiling
+        ? Math.min(tileCount || collections.length, collections.length)
+        : Math.min(tileCount, collections.length);
+      
+      const positions = calculateTilePositions(count, containerWidth, containerHeight);
+      setTilePositions(positions);
+    }
+  }, [tileAspectRatios, collections.length, tileCount, isAutoTiling]);
+
+  // Handle wheel events globally - only work when mouse is over zoom slider
+  const handleGlobalWheel = useCallback((e) => {
     const slider = zoomSliderRef.current;
     if (!slider) return;
-
-    const wheelHandler = (e) => handleZoomWheel(e);
     
-    slider.addEventListener('wheel', wheelHandler, { passive: false });
+    // Get the bounding rect of the zoom slider
+    const rect = slider.getBoundingClientRect();
+    
+    // Check if mouse position is within the zoom slider area
+    const isOverZoomSlider = 
+      e.clientX >= rect.left && 
+      e.clientX <= rect.right && 
+      e.clientY >= rect.top && 
+      e.clientY <= rect.bottom;
+    
+    // Only adjust zoom when mouse is over the zoom slider area
+    if (isOverZoomSlider) {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
+      setZoomScale(prev => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev + delta)));
+    }
+    // If not over zoom slider, do nothing (don't prevent default)
+  }, []);
+
+  // Add global wheel event listener
+  useEffect(() => {
+    const wheelHandler = (e) => handleGlobalWheel(e);
+    
+    window.addEventListener('wheel', wheelHandler, { passive: false });
     
     return () => {
-      slider.removeEventListener('wheel', wheelHandler);
+      window.removeEventListener('wheel', wheelHandler);
     };
-  }, [handleZoomWheel]);
+  }, [handleGlobalWheel]);
 
   // Zoom slider handlers
   const handleZoomSliderChange = (e) => {
@@ -421,6 +516,7 @@ export default function App() {
                   isSingle={activeTileCount === 1}
                   globalTransitionEffect={globalTransitionEffect}
                   totalTiles={activeTileCount}
+                  onAspectRatioChange={handleAspectRatioChange}
                 />
               </div>
             );
@@ -473,91 +569,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Zoom Slider - Positioned at the bottom */}
-      {collections.length > 0 && (
-        <div 
-          ref={zoomSliderRef}
-          className="zoom-slider-container"
-          style={{
-            position: 'fixed',
-            bottom: 24,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 25,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            padding: '10px 20px',
-            background: 'rgba(13, 18, 31, 0.85)',
-            backdropFilter: 'blur(12px)',
-            borderRadius: 24,
-            border: '1px solid rgba(255, 255, 255, 0.1)',
-            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
-            cursor: 'ns-resize',
-            userSelect: 'none'
-          }}
-        >
-          <ZoomOut size={16} style={{ color: 'var(--text-secondary)' }} />
-          
-          <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 2
-          }}>
-            <span style={{ 
-              fontSize: '0.6rem', 
-              color: 'var(--text-muted)',
-              fontWeight: 600,
-              letterSpacing: '0.05em'
-            }}>
-              缩放
-            </span>
-            <input
-              type="range"
-              min={MIN_ZOOM}
-              max={MAX_ZOOM}
-              step={ZOOM_STEP}
-              value={zoomScale}
-              onChange={handleZoomSliderChange}
-              className="zoom-slider"
-              style={{
-                width: 200,
-                cursor: 'pointer'
-              }}
-            />
-            <span style={{ 
-              fontSize: '0.65rem', 
-              color: 'var(--accent-purple)',
-              fontWeight: 600
-            }}>
-              {Math.round(zoomScale * 100)}%
-            </span>
-          </div>
-          
-          <ZoomIn size={16} style={{ color: 'var(--text-secondary)' }} />
-          
-          <div style={{
-            width: 1,
-            height: 30,
-            background: 'rgba(255, 255, 255, 0.1)',
-            margin: '0 4px'
-          }} />
-          
-          <button
-            onClick={() => setZoomScale(1)}
-            className="glass-button"
-            style={{
-              padding: '4px 10px',
-              fontSize: '0.7rem',
-              background: zoomScale === 1 ? 'rgba(139, 92, 246, 0.3)' : 'rgba(255, 255, 255, 0.05)'
-            }}
-            title="重置缩放"
-          >
-            重置
-          </button>
-        </div>
-      )}
 
       {/* Pagination Pill */}
       {isPaginated && (
@@ -605,6 +616,13 @@ export default function App() {
           setGlobalTransitionEffect={setGlobalTransitionEffect}
           sortMethod={sortMethod}
           setSortMethod={setSortMethod}
+          zoomScale={zoomScale}
+          setZoomScale={setZoomScale}
+          onZoomIn={zoomIn}
+          onZoomOut={zoomOut}
+          zoomSliderRef={zoomSliderRef}
+          isHUDpinned={isHUDpinned}
+          setIsHUDpinned={setIsHUDpinned}
         />
       )}
 
@@ -694,8 +712,42 @@ export default function App() {
               <strong>分屏模式:</strong> {tileCount} 窗口 ({gridConfig.cols}×{gridConfig.rows})
             </div>
             <div style={{ color: 'var(--text-muted)' }}>
-              💡 使用底部缩放条调整窗口大小，滚轮仅在缩放条上生效
+              💡 使用底部缩放条调整窗口大小
             </div>
+          </div>
+        </div>
+
+        {/* Transition Animation Effect */}
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 16 }}>
+          <h4 style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Sparkles size={16} />
+            过渡动画
+          </h4>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {[
+              { id: 'ken-burns', label: '温和缩放' },
+              { id: 'fade', label: '平滑渐变' },
+              { id: 'slide', label: '滑入' },
+              { id: 'none', label: '关闭动画' }
+            ].map(effect => (
+              <button
+                key={effect.id}
+                onClick={() => setGlobalTransitionEffect(effect.id)}
+                style={{
+                  background: globalTransitionEffect === effect.id ? 'var(--accent-purple)' : 'rgba(255,255,255,0.05)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  color: '#fff',
+                  fontSize: '0.7rem',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontWeight: globalTransitionEffect === effect.id ? '600' : 'normal',
+                  transition: 'var(--transition-smooth)'
+                }}
+              >
+                {effect.label}
+              </button>
+            ))}
           </div>
         </div>
 

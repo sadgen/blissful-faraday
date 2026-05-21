@@ -235,8 +235,8 @@ html, body, #root, .app-container {
 /* Sub-window (Slideshow Tile) Container */
 .slideshow-tile {
   position: absolute;
-  background-color: #030712;
-  overflow: hidden;
+  background-color: transparent;
+  overflow: visible;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -248,16 +248,16 @@ html, body, #root, .app-container {
   /* Overlap transparency effect */
   opacity: 0.85;
   z-index: 1;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  box-shadow: none;
   border: none; /* No border to prevent overflow */
 }
 
 .slideshow-tile:hover {
   opacity: 1; /* Full opacity on hover */
   z-index: 1000; /* Bring to front on hover */
-  box-shadow: 0 12px 48px rgba(139, 92, 246, 0.6);
-  border-color: rgba(139, 92, 246, 0.6);
-  transform: scale(1.05);
+  box-shadow: 0 4px 20px rgba(139, 92, 246, 0.3);
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  transform: scale(1.02);
 }
 
 .slideshow-tile.maximized {
@@ -277,11 +277,15 @@ html, body, #root, .app-container {
   left: 0;
   width: 100%;
   height: 100%;
+  background-color: transparent;
 }
 
 .slide-image-container {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -289,6 +293,7 @@ html, body, #root, .app-container {
   opacity: 0;
   transform: scale(1.05);
   will-change: opacity, transform;
+  background-color: transparent;
 }
 
 .slide-image-container.active {
@@ -316,13 +321,15 @@ html, body, #root, .app-container {
   pointer-events: none;
 }
 
-/* Foreground portrait containment frame */
+/* Foreground image fill frame - cover mode for better space usage */
 .slide-image-main {
-  position: relative;
+  position: absolute;
   width: 100%;
   height: 100%;
-  object-fit: contain; /* Keep original aspect ratio, allow black bars */
+  object-fit: cover; /* Fill container, crop if needed */
   z-index: 1;
+  top: 0;
+  left: 0;
 }
 
 /* Transition effects targeting container */
@@ -468,35 +475,25 @@ html, body, #root, .app-container {
   transform: scale(1.1);
 }
 
-/* Floating Control HUD */
-.hud-trigger-zone {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  height: 20px;
-  width: 300px;
-  z-index: 19;
-  cursor: pointer;
-}
-
+/* Floating Control HUD - Full width bottom bar */
 .hud-container {
   position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%) translateY(0);
+  bottom: 0;
+  left: 0;
+  right: 0;
   z-index: 20;
-  width: auto;
-  max-width: 90vw;
-  padding: 16px 24px;
+  width: 100%;
+  padding: 8px 16px;
   transition: var(--transition-smooth);
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 12px;
+  border-radius: 0;
+  border-bottom: none;
 }
 
 .hud-container.hidden {
-  transform: translateX(-50%) translateY(120%);
+  transform: translateY(100%);
   opacity: 0;
   pointer-events: none;
 }
@@ -504,14 +501,18 @@ html, body, #root, .app-container {
 .hud-section {
   display: flex;
   align-items: center;
-  gap: 12px;
-  border-right: 1px solid rgba(255, 255, 255, 0.1);
-  padding-right: 20px;
+  gap: 8px;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  padding-right: 12px;
 }
 
 .hud-section:last-child {
   border-right: none;
   padding-right: 0;
+}
+
+.hud-section-compact {
+  padding: 4px 8px;
 }
 
 .hud-label {
@@ -542,6 +543,7 @@ html, body, #root, .app-container {
   top: 0;
   bottom: 0;
   width: 350px;
+  max-height: 100vh;
   z-index: 30;
   transform: translateX(100%);
   transition: var(--transition-smooth);
@@ -551,6 +553,28 @@ html, body, #root, .app-container {
   gap: 20px;
   border-radius: 24px 0 0 24px;
   border-left: 1px solid var(--glass-border);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 92, 246, 0.5) rgba(255, 255, 255, 0.05);
+}
+
+.settings-drawer::-webkit-scrollbar {
+  width: 6px;
+}
+
+.settings-drawer::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+}
+
+.settings-drawer::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.5);
+  border-radius: 3px;
+}
+
+.settings-drawer::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.7);
 }
 
 .settings-drawer.open {
@@ -636,7 +660,7 @@ html, body, #root, .app-container {
 /* Floating Pagination Deck */
 .pagination-deck {
   position: fixed;
-  bottom: 100px;
+  bottom: 60px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 18;

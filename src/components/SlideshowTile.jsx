@@ -42,12 +42,24 @@ export default function SlideshowTile({
   const dragStartRef = useRef({ x: 0, y: 0 });
   const positionRef = useRef({ x: 0, y: 0 });
 
+  // Preload cache for faster image switching
+  const preloadCacheRef = useRef(new Map());
+  const PRELOAD_COUNT = 5; // Preload next 5 images
+
   const activeIdxRef = useRef(activeIdx);
   const imagesRef = useRef(images);
   const currentCollNameRef = useRef(currentCollName);
   const collectionsRef = useRef(collections);
   
   const [barDuration, setBarDuration] = useState(globalSpeed);
+  const [tileAspectRatio, setTileAspectRatio] = useState(null);
+  
+  // Notify parent of aspect ratio change
+  useEffect(() => {
+    if (tileAspectRatio && onAspectRatioChange) {
+      onAspectRatioChange(tileId, tileAspectRatio);
+    }
+  }, [tileAspectRatio, tileId, onAspectRatioChange]);
 
   // Sync refs with state values
   useEffect(() => {
@@ -65,9 +77,9 @@ export default function SlideshowTile({
   useEffect(() => {
     collectionsRef.current = collections;
   }, [collections]);
+  
   const [isLoadingImages, setIsLoadingImages] = useState(false);
   const [loadError, setLoadError] = useState('');
-  const [tileAspectRatio, setTileAspectRatio] = useState(null);
 
   const tileRef = useRef(null);
   const [parentSize, setParentSize] = useState({ width: 0, height: 0 });
@@ -112,6 +124,42 @@ export default function SlideshowTile({
     }
   }, [initialCollectionName]);
 
+  // Optimized: fetch headers first, then load full image
+  const detectAspectRatio = (collName, imgName) => {
+    const imgUrl = `/api/image?collection=${encodeURIComponent(collName)}&name=${encodeURIComponent(imgName)}`;
+    
+    // Step 1: Quick fetch for dimensions
+    fetch(imgUrl, { 
+      method: 'GET',
+      headers: { 'Range': 'bytes=0-65535' }
+    })
+    .then(response => {
+      if (!response.ok) throw new Error('Fetch failed');
+      return response.arrayBuffer();
+    })
+    .then(buffer => {
+      const dimensions = getImageDimensions(buffer);
+      if (dimensions) {
+        setTileAspectRatio(dimensions.width / dimensions.height);
+      }
+    })
+    .catch(() => {
+      // Fallback to full image load
+      const img = new Image();
+      img.onload = () => {
+        setTileAspectRatio(img.width / img.height);
+      };
+      img.src = imgUrl;
+    });
+  };
+
+  // Detect aspect ratio of initial/first image
+  useEffect(() => {
+    if (images.length > 0 && activeIdx >= 0 && activeIdx < images.length) {
+      detectAspectRatio(currentCollName, images[activeIdx]);
+    }
+  }, [activeIdx, currentCollName, images.length > 0 ? images : []]);
+
   // Fetch images dynamically (lazy loading) when the active collection name changes
   useEffect(() => {
     if (!currentCollName) {
@@ -146,17 +194,9 @@ export default function SlideshowTile({
         
         // Detect aspect ratio of first image
         if (data.images && data.images.length > 0) {
-          const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(data.images[0])}`;
-          const img = new Image();
-          img.onload = () => {
-            const aspectRatio = img.width / img.height;
-            setTileAspectRatio(aspectRatio);
-            // Notify parent component about the aspect ratio change
-            if (onAspectRatioChange) {
-              onAspectRatioChange(currentCollName, aspectRatio);
-            }
-          };
-          img.src = imgUrl;
+          detectAspectRatio(currentCollName, data.images[0]);
+          // Preload first few images
+          setTimeout(() => preloadImages(0, PRELOAD_COUNT), 100);
         }
       } catch (err) {
         console.error(err);
@@ -261,6 +301,190 @@ export default function SlideshowTile({
     };
   }, [isPlaying, duration, totalTiles, tileId, images.length]);
 
+  // Preload images ahead of time for faster switching
+  // Optimized: fetch headers first for dimensions, then load full image
+  const preloadImages = (startIdx, count) => {
+    const currentImages = imagesRef.current;
+    const cache = preloadCacheRef.current;
+    
+    for (let i = 0; i < count; i++) {
+      const idx = (startIdx + i) % currentImages.length;
+      const imgName = currentImages[idx];
+      const cacheKey = `${currentCollName}:${imgName}`;
+      
+      // Skip if already cached
+      if (cache.has(cacheKey)) continue;
+      
+      const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(imgName)}`;
+      
+      // Step 1: Fetch headers for dimensions
+      fetch(imgUrl, { 
+        method: 'GET',
+        headers: { 'Range': 'bytes=0-65535' }
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Fetch failed');
+        return response.arrayBuffer();
+      })
+      .then(buffer => {
+        const dimensions = getImageDimensions(buffer);
+        const aspectRatio = dimensions ? dimensions.width / dimensions.height : null;
+        
+        // Step 2: Load full image
+        const img = new Image();
+        img.onload = () => {
+          // Store in cache with aspect ratio
+          cache.set(cacheKey, { img, aspectRatio: img.width / img.height });
+          // Keep cache size manageable
+          if (cache.size > PRELOAD_COUNT * 3) {
+            const firstKey = cache.keys().next().value;
+            if (firstKey) cache.delete(firstKey);
+          }
+        };
+        img.src = imgUrl;
+      })
+      .catch(() => {
+        // Fallback: load image directly
+        const img = new Image();
+        img.onload = () => {
+          cache.set(cacheKey, { img, aspectRatio: img.width / img.height });
+        };
+        img.src = imgUrl;
+      });
+    }
+  };
+
+  // Pre-load image and get aspect ratio, then advance slide
+  // Optimized: check cache first, then fetch if needed
+  const preloadAndAdvance = (nextIdx, collName) => {
+    const imgName = imagesRef.current[nextIdx];
+    if (!imgName) return;
+
+    const cacheKey = `${collName}:${imgName}`;
+    const cached = preloadCacheRef.current.get(cacheKey);
+    
+    // If cached, use immediately (both img and aspectRatio)
+    if (cached && cached.img && cached.img.complete) {
+      setTileAspectRatio(cached.aspectRatio || (cached.img.width / cached.img.height));
+      setActiveIdx(nextIdx);
+      resetProgressBar();
+      setTimeout(() => setOutgoingIdx(null), 600);
+      
+      // Trigger preload for next images
+      preloadImages(nextIdx + 1, PRELOAD_COUNT);
+      return;
+    }
+
+    // Not cached, fetch headers first for aspect ratio
+    const imgUrl = `/api/image?collection=${encodeURIComponent(collName)}&name=${encodeURIComponent(imgName)}`;
+    
+    fetch(imgUrl, { 
+      method: 'GET',
+      headers: { 'Range': 'bytes=0-65535' }
+    })
+    .then(response => {
+      if (!response.ok) throw new Error('Fetch failed');
+      return response.arrayBuffer();
+    })
+    .then(buffer => {
+      const dimensions = getImageDimensions(buffer);
+      const aspectRatio = dimensions ? dimensions.width / dimensions.height : null;
+      if (aspectRatio) {
+        setTileAspectRatio(aspectRatio);
+      }
+      // Now load full image
+      const img = new Image();
+      img.onload = () => {
+        const finalAspectRatio = img.width / img.height;
+        preloadCacheRef.current.set(cacheKey, { img, aspectRatio: finalAspectRatio });
+        setTileAspectRatio(finalAspectRatio);
+        setActiveIdx(nextIdx);
+        resetProgressBar();
+        setTimeout(() => setOutgoingIdx(null), 600);
+        
+        // Trigger preload for next images
+        preloadImages(nextIdx + 1, PRELOAD_COUNT);
+      };
+      img.src = imgUrl;
+    })
+    .catch(() => {
+      // Fallback: load full image directly
+      const img = new Image();
+      img.onload = () => {
+        const finalAspectRatio = img.width / img.height;
+        preloadCacheRef.current.set(cacheKey, { img, aspectRatio: finalAspectRatio });
+        setTileAspectRatio(finalAspectRatio);
+        setActiveIdx(nextIdx);
+        resetProgressBar();
+        setTimeout(() => setOutgoingIdx(null), 600);
+        
+        preloadImages(nextIdx + 1, PRELOAD_COUNT);
+      };
+      img.src = imgUrl;
+    });
+  };
+
+  // Parse image dimensions from buffer without full decode
+  const getImageDimensions = (buffer) => {
+    const bytes = new Uint8Array(buffer);
+    
+    // Check for JPEG (FF D8)
+    if (bytes[0] === 0xFF && bytes[1] === 0xD8) {
+      let offset = 2;
+      while (offset < bytes.length) {
+        if (bytes[offset] !== 0xFF) break;
+        const marker = bytes[offset + 1];
+        // SOF markers contain dimensions
+        if ((marker >= 0xC0 && marker <= 0xC3) || 
+            (marker >= 0xC5 && marker <= 0xC7) ||
+            (marker >= 0xC9 && marker <= 0xCB) ||
+            (marker >= 0xCD && marker <= 0xCF)) {
+          const height = (bytes[offset + 5] << 8) | bytes[offset + 6];
+          const width = (bytes[offset + 7] << 8) | bytes[offset + 8];
+          if (width > 0 && height > 0) {
+            return { width, height };
+          }
+        }
+        const length = (bytes[offset + 2] << 8) | bytes[offset + 3];
+        offset += 2 + length;
+        if (length < 2 || offset >= bytes.length) break;
+      }
+    }
+    
+    // Check for PNG (89 50 4E 47)
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) {
+      const width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+      const height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+      if (width > 0 && height > 0) {
+        return { width, height };
+      }
+    }
+    
+    // Check for GIF (47 49 46 38)
+    if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
+      const width = bytes[6] | (bytes[7] << 8);
+      const height = bytes[8] | (bytes[9] << 8);
+      if (width > 0 && height > 0) {
+        return { width, height };
+      }
+    }
+    
+    // Check for WebP (52 49 46 46 ... 57 42 50)
+    if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
+      // Check for VP8 chunk
+      if (bytes[11] === 0x57 && bytes[12] === 0x42 && bytes[13] === 0x50) {
+        // Simple format
+        const width = bytes[26] | (bytes[27] << 8) | ((bytes[28] & 0x7F) << 16);
+        const height = bytes[28] | (bytes[29] << 8) | ((bytes[30] & 0x7F) << 16);
+        if (width > 0 && height > 0) {
+          return { width, height };
+        }
+      }
+    }
+    
+    return null;
+  };
+
   // Skip to next collection directly (for middle-click)
   const skipToNextCollection = () => {
     const allColls = collectionsRef.current;
@@ -311,10 +535,14 @@ export default function SlideshowTile({
     setDragPosition({ x: newX, y: newY });
   };
 
-  // Mouse up handler to end drag
+  // Mouse up handler to end drag - keep the dragged position
   const handleMouseUp = (e) => {
     if (e.button === 0 && isDragging) {
       setIsDragging(false);
+      // Update positionRef to keep the new position
+      positionRef.current = { x: dragPosition.x, y: dragPosition.y };
+      // Reset dragStartRef for next drag
+      dragStartRef.current = { x: 0, y: 0 };
     }
   };
 
@@ -338,10 +566,11 @@ export default function SlideshowTile({
     setOutgoingIdx(currentIdx);
     
     let nextIdx = currentIdx + direction;
+    const currentCollNameVal = currentCollNameRef.current;
+    const allColls = collectionsRef.current;
+    
     if (nextIdx >= currentImages.length) {
       // Finished the current folder, cycle to the next collection!
-      const currentCollNameVal = currentCollNameRef.current;
-      const allColls = collectionsRef.current;
       const currentIdxInCollections = allColls.indexOf(currentCollNameVal);
       
       if (currentIdxInCollections !== -1 && allColls.length > 1) {
@@ -349,6 +578,7 @@ export default function SlideshowTile({
         const nextCollName = allColls[nextCollIdx];
         
         setCurrentCollName(nextCollName);
+        // Reset to first image - will load and get aspect ratio in useEffect
         setActiveIdx(0);
         setOutgoingIdx(null);
         resetProgressBar();
@@ -359,8 +589,6 @@ export default function SlideshowTile({
       }
     } else if (nextIdx < 0) {
       // Going backwards past 0: cycle to previous collection's last image!
-      const currentCollNameVal = currentCollNameRef.current;
-      const allColls = collectionsRef.current;
       const currentIdxInCollections = allColls.indexOf(currentCollNameVal);
       
       if (currentIdxInCollections !== -1 && allColls.length > 1) {
@@ -369,6 +597,7 @@ export default function SlideshowTile({
         
         shouldStartFromLastRef.current = true;
         setCurrentCollName(prevCollName);
+        // Will be set to last image in fetchImages useEffect
         setActiveIdx(0);
         setOutgoingIdx(null);
         resetProgressBar();
@@ -379,13 +608,8 @@ export default function SlideshowTile({
       }
     }
     
-    setActiveIdx(nextIdx);
-    resetProgressBar();
-
-    // Clear outgoing image after transition completes (600ms in CSS)
-    setTimeout(() => {
-      setOutgoingIdx(null);
-    }, 600);
+    // Pre-load image first, then update aspect ratio and display
+    preloadAndAdvance(nextIdx, currentCollNameVal);
   };
 
   // 2.5. Wheel scroll handler to navigate images (with throttle and autoplay pause)
@@ -429,12 +653,13 @@ export default function SlideshowTile({
   // So we just use 100% to fill the parent container
   const tileStyle = {
     width: '100%',
-    height: '100%'
+    height: '100%',
+    overflow: 'hidden'
   };
 
-  // Drag transform style
-  const dragTransform = isDragging
-    ? { transform: `translate(${dragPosition.x}px, ${dragPosition.y}px)`, zIndex: 1000, cursor: 'grabbing' }
+  // Drag transform style - always apply position to keep dragged position
+  const dragTransform = dragPosition.x !== 0 || dragPosition.y !== 0
+    ? { transform: `translate(${dragPosition.x}px, ${dragPosition.y}px)`, zIndex: 1000, cursor: isDragging ? 'grabbing' : 'grab' }
     : {};
 
   // Helper function for image URL
@@ -473,7 +698,13 @@ export default function SlideshowTile({
     >
       
       {/* 1. Image Layers */}
-      <div className="slide-image-wrapper" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+      <div className="slide-image-wrapper" style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center',
+        width: '100%',
+        height: '100%'
+      }}>
         {isLoadingImages ? (
           <div style={{ zIndex: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
             <div style={{
