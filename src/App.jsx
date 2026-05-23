@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { RefreshCw, FolderOpen, Save, X, Settings, Image, Play, Pause, AlertTriangle, ChevronLeft, ChevronRight, Database, Trash2, ZoomIn, ZoomOut, Sparkles } from 'lucide-react';
-import SlideshowTile from './components/SlideshowTile';
-import ControlHUD from './components/ControlHUD';
+import DesktopLayout from './components/DesktopLayout';
+import MobileLayout from './components/MobileLayout';
+import { RefreshCw } from 'lucide-react';
 
 // Preset grid configurations for each tile count
 const GRID_PRESETS = {
   1: { cols: 1, rows: 1 },
+  2: { cols: 1, rows: 2 },
   3: { cols: 3, rows: 1 },
+  4: { cols: 2, rows: 2 },
   5: { cols: 5, rows: 1 },
+  6: { cols: 2, rows: 3 },
   12: { cols: 6, rows: 2 }
 };
 
@@ -38,8 +41,23 @@ export default function App() {
 
   const savedConfig = loadSavedConfig();
 
-  const [rawCollections, setRawCollections] = useState([]);
-  const [scanDirectory, setScanDirectory] = useState('');
+  // Load cached collections list for instant rendering on refresh (SWR pattern)
+  const loadCachedCollections = () => {
+    try {
+      const cached = localStorage.getItem('blissfulFaradayCollectionsCache');
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (err) {
+      console.warn('Failed to load cached collections:', err);
+    }
+    return { collections: [], scanDirectory: '' };
+  };
+
+  const cachedData = loadCachedCollections();
+
+  const [rawCollections, setRawCollections] = useState(cachedData.collections || []);
+  const [scanDirectory, setScanDirectory] = useState(cachedData.scanDirectory || '');
   const [isAutoTiling, setIsAutoTiling] = useState(savedConfig?.isAutoTiling !== undefined ? savedConfig.isAutoTiling : true);
   const [tileCount, setTileCount] = useState(savedConfig?.tileCount || 1);
   const [globalSpeed, setGlobalSpeed] = useState(savedConfig?.globalSpeed || 5000);
@@ -47,12 +65,65 @@ export default function App() {
   const [globalRefreshTrigger, setGlobalRefreshTrigger] = useState(0);
   const [globalTransitionEffect, setGlobalTransitionEffect] = useState(savedConfig?.globalTransitionEffect || 'none');
   
+  // Track page visibility to pause/resume slideshow when tab is inactive/active
+  const [isDocumentVisible, setIsDocumentVisible] = useState(document.visibilityState === 'visible');
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      setIsDocumentVisible(document.visibilityState === 'visible');
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+  
+  // 目录历史记录状态
+  const [directoryHistory, setDirectoryHistory] = useState(() => {
+    try {
+      const saved = localStorage.getItem('blissfulFaradayDirHistory');
+      return saved ? JSON.parse(saved) : [];
+    } catch (err) {
+      console.warn('Failed to load directory history:', err);
+      return [];
+    }
+  });
+
+  // 当 scanDirectory 改变时，更新并持久化目录历史
+  useEffect(() => {
+    if (scanDirectory) {
+      setDirectoryHistory(prev => {
+        const next = [scanDirectory, ...prev.filter(d => d !== scanDirectory)];
+        const sliced = next.slice(0, 10);
+        try {
+          localStorage.setItem('blissfulFaradayDirHistory', JSON.stringify(sliced));
+        } catch (err) {
+          console.warn('Failed to save directory history:', err);
+        }
+        return sliced;
+      });
+    }
+  }, [scanDirectory]);
+
+  // 删除单条目录历史记录
+  const handleRemoveHistoryItem = useCallback((dirToRemove) => {
+    setDirectoryHistory(prev => {
+      const next = prev.filter(d => d !== dirToRemove);
+      try {
+        localStorage.setItem('blissfulFaradayDirHistory', JSON.stringify(next));
+      } catch (err) {
+        console.warn('Failed to update directory history:', err);
+      }
+      return next;
+    });
+  }, []);
+
   // Settings drawer state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [inputScanDir, setInputScanDir] = useState('');
+  const [inputScanDir, setInputScanDir] = useState(cachedData.scanDirectory || '');
   const [isSubmittingDir, setIsSubmittingDir] = useState(false);
   const [dirError, setDirError] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(cachedData.collections && cachedData.collections.length > 0 ? false : true);
   const [fetchError, setFetchError] = useState('');
   
   // Cache management state
@@ -63,8 +134,14 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(0);
   const pageSize = 12;
 
-  const [sortMethod, setSortMethod] = useState(savedConfig?.sortMethod || 'random');
+    const [sortMethod, setSortMethod] = useState(savedConfig?.sortMethod || 'random');
   const [randomTrigger, setRandomTrigger] = useState(0);
+  
+  // Viewport detection & LAN IP states
+  const [isMobile, setIsMobile] = useState(false);
+  const [lanIp, setLanIp] = useState('');
+  const [showLanModal, setShowLanModal] = useState(false);
+
   
   // Tile positioning state
   const [tilePositions, setTilePositions] = useState({});
@@ -80,6 +157,25 @@ export default function App() {
   
   // Ref for zoom slider container to capture wheel events
   const zoomSliderRef = useRef(null);
+
+  // Synchronized state for displayed collections per tile slot
+  const [displayedCollections, setDisplayedCollections] = useState([]);
+
+  // Track dragging offset positions for layout intersection checks
+  const [draggedOffsets, setDraggedOffsets] = useState({});
+
+  // Reset all dragged offsets whenever global speed, refresh, tile count, or layout settings change
+  useEffect(() => {
+    setDraggedOffsets({});
+  }, [globalRefreshTrigger, tileCount, isAutoTiling]);
+
+  // Callback to record a tile's dragged offset
+  const handleTileDrag = useCallback((tileId, offset) => {
+    setDraggedOffsets(prev => ({
+      ...prev,
+      [tileId]: offset
+    }));
+  }, []);
 
   // 1. Process, sort and map collections
   const collections = React.useMemo(() => {
@@ -124,7 +220,10 @@ export default function App() {
   // Fetch collections from API
   const fetchCollections = async () => {
     try {
-      setIsLoading(true);
+      // Only show loader if we have no cached collections to prevent full-screen spinner on refresh
+      if (rawCollections.length === 0) {
+        setIsLoading(true);
+      }
       setFetchError('');
       const res = await fetch('/api/collections');
       if (!res.ok) {
@@ -134,9 +233,23 @@ export default function App() {
       if (data.error) {
         throw new Error(data.error);
       }
-      setRawCollections(data.collections || []);
-      setScanDirectory(data.scanDirectory || '');
-      setInputScanDir(data.scanDirectory || '');
+      
+      const nextCollections = data.collections || [];
+      const nextScanDirectory = data.scanDirectory || '';
+      
+      setRawCollections(nextCollections);
+      setScanDirectory(nextScanDirectory);
+      setInputScanDir(nextScanDirectory);
+      
+      // Update local storage cache
+      try {
+        localStorage.setItem('blissfulFaradayCollectionsCache', JSON.stringify({
+          collections: nextCollections,
+          scanDirectory: nextScanDirectory
+        }));
+      } catch (err) {
+        console.warn('Failed to cache collections in localStorage:', err);
+      }
     } catch (err) {
       console.error(err);
       setFetchError(err.message);
@@ -147,6 +260,37 @@ export default function App() {
 
   useEffect(() => {
     fetchCollections();
+  }, []);
+
+  // Viewport & LAN IP Fetching Effects
+  useEffect(() => {
+    const checkMobile = () => {
+      const widthMatch = window.innerWidth < 768;
+      const uaMatch = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      setIsMobile(widthMatch || uaMatch);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  // Enforce mobile-specific split screen presets [1, 2, 4, 6] and manual-only mode
+  useEffect(() => {
+    if (isMobile) {
+      setIsAutoTiling(false);
+      if (![1, 2, 4, 6].includes(tileCount)) {
+        setTileCount(2);
+      }
+    }
+  }, [isMobile, tileCount]);
+
+  useEffect(() => {
+    fetch('/api/lan-ip')
+      .then(res => res.json())
+      .then(data => {
+        if (data.ip) setLanIp(data.ip);
+      })
+      .catch(err => console.warn('Failed to fetch LAN IP:', err));
   }, []);
 
   // Save configuration to localStorage
@@ -207,10 +351,18 @@ export default function App() {
       const calculatedHeight = baseWidth / aspectRatio;
       
       // Use the smaller of base height or calculated height (to fit in cell)
-      const adjustedHeight = Math.min(baseHeight, calculatedHeight);
+      const adjustedHeight = rows === 2 ? calculatedHeight : Math.min(baseHeight, calculatedHeight);
       
       // Calculate vertical offset to center the tile within the cell
-      const verticalOffset = (baseHeight - adjustedHeight) / 2;
+      // For 2-row layouts (like 12 windows), stick top row to page top (offset 0) and bottom row to page bottom
+      let verticalOffset = (baseHeight - adjustedHeight) / 2;
+      if (rows === 2) {
+        if (row === 0) {
+          verticalOffset = 0;
+        } else if (row === 1) {
+          verticalOffset = baseHeight - adjustedHeight;
+        }
+      }
       
       const baseLeft = col * baseWidth;
       const baseTop = row * baseHeight;
@@ -251,13 +403,21 @@ export default function App() {
       const baseHeight = availableHeight / rows;
       
       // Use the smaller of cell height or calculated height
-      const scaledHeight = Math.min(baseHeight, calculatedHeight);
+      const scaledHeight = rows === 2 ? calculatedHeight : Math.min(baseHeight, calculatedHeight);
       
       // Keep left position aligned with grid column
       // Adjust top to center within the cell
-      const verticalOffset = (baseHeight - scaledHeight) / 2;
+      // For 2-row layouts (like 12 windows), stick top row to page top (offset 0) and bottom row to page bottom
+      let verticalOffset = (baseHeight - scaledHeight) / 2;
       const col = index % cols;
       const row = Math.floor(index / cols);
+      if (rows === 2) {
+        if (row === 0) {
+          verticalOffset = 0;
+        } else if (row === 1) {
+          verticalOffset = baseHeight - scaledHeight;
+        }
+      }
       const baseWidth = window.innerWidth / cols;
       
       scaledPositions[index] = {
@@ -388,6 +548,11 @@ export default function App() {
         throw new Error(data.error || '无法更改扫描文件夹');
       }
 
+      // Clear local cache for the old directory to force clean loading
+      try {
+        localStorage.removeItem('blissfulFaradayCollectionsCache');
+      } catch (err) {}
+
       setScanDirectory(data.scanDirectory);
       setRawCollections([]);
       setIsSettingsOpen(false);
@@ -409,7 +574,7 @@ export default function App() {
   // Cache management
   const fetchCacheInfo = async () => {
     try {
-      const res = await fetch('/api/cache/info');
+      const res = await fetch(`/api/cache/info?t=${Date.now()}`);
       if (!res.ok) {
         throw new Error(`API error: ${res.statusText}`);
       }
@@ -417,6 +582,8 @@ export default function App() {
       setCacheInfo(data);
     } catch (err) {
       console.error('Failed to fetch cache info:', err);
+      setCacheInfo({ error: true, message: err.message });
+      setCacheMessage('⚠️ 无法连接到本地后台服务。请检查命令行窗口，确认已运行 npm run dev 启动了 Vite 开发服务器。如果直接双击打开了 dist/index.html 文件，部分高级缓存功能将无法使用。');
     }
   };
 
@@ -434,6 +601,11 @@ export default function App() {
         throw new Error(data.error || '无法清除缓存');
       }
       
+      // Clear frontend cache as well
+      try {
+        localStorage.removeItem('blissfulFaradayCollectionsCache');
+      } catch (err) {}
+
       setCacheMessage('✅ 缓存已成功清除');
       setCacheInfo(null);
       await fetchCollections();
@@ -444,20 +616,124 @@ export default function App() {
     }
   };
 
-  const isPaginated = !isAutoTiling && collections.length > pageSize;
-  const totalPages = isPaginated ? Math.ceil(collections.length / pageSize) : 1;
+  const isPaginated = false;
+  const totalPages = 1;
 
-  // Active collections for display
-  const activeCollections = isAutoTiling
-    ? collections.slice(0, tileCount || collections.length)
-    : (isPaginated 
-        ? collections.slice(currentPage * pageSize, (currentPage + 1) * pageSize) 
-        : collections);
+  // Active collections for display - matches exactly the active split screen count
+  const activeCollections = React.useMemo(() => {
+    return collections.slice(0, tileCount || collections.length);
+  }, [collections, tileCount]);
 
   const activeTileCount = isAutoTiling ? (activeCollections.length || 1) : tileCount;
 
+  // Sync displayed collections when active/default collections change
+  useEffect(() => {
+    setDisplayedCollections(activeCollections);
+  }, [activeCollections]);
+
+  // Handle folder change for a specific tile slot
+  const handleCollectionChangeForTile = useCallback((tileId, newCollName) => {
+    setDisplayedCollections(prev => {
+      const next = [...prev];
+      next[tileId] = newCollName;
+      return next;
+    });
+  }, []);
+
   // Get scaled positions for rendering
   const scaledPositions = zoomScale !== 1 ? getScaledPositions() : tilePositions;
+
+  // Real positions of tiles incorporating drag offsets
+  const realTilePositions = React.useMemo(() => {
+    const positions = {};
+    Object.entries(scaledPositions).forEach(([index, pos]) => {
+      const offset = draggedOffsets[index] || { x: 0, y: 0 };
+      positions[index] = {
+        left: pos.left + offset.x,
+        top: pos.top + offset.y,
+        width: pos.width,
+        height: pos.height
+      };
+    });
+    return positions;
+  }, [scaledPositions, draggedOffsets]);
+
+  // Calculate overlapping tile IDs (2D rectangular collision detection)
+  // To keep non-overlapping parts at 100% opacity, we only flag the upper-most overlapping element (id2)
+  // as overlapping. The under-lapping element (id1) remains at 100% opacity.
+  const overlappingTiles = React.useMemo(() => {
+    const overlapping = new Set();
+    const keys = Object.keys(realTilePositions);
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) {
+        const id1 = keys[i];
+        const id2 = keys[j];
+        const r1 = realTilePositions[id1];
+        const r2 = realTilePositions[id2];
+        if (!r1 || !r2) continue;
+        const intersect = !(r2.left >= r1.left + r1.width ||
+                            r2.left + r2.width <= r1.left ||
+                            r2.top >= r1.top + r1.height ||
+                            r2.top + r2.height <= r1.top);
+        if (intersect) {
+          // id2 is rendered later, so it naturally stacks on top of id1.
+          // By only flagging id2, the top window becomes 50% translucent,
+          // allowing the 100% opaque bottom window to peek through,
+          // whilst the bottom window's non-overlapped parts remain perfectly 100% opaque.
+          overlapping.add(Number(id2));
+        }
+      }
+    }
+    return overlapping;
+  }, [realTilePositions]);
+
+  // Calculate detailed relative overlap intersections for each tile (with lower index tiles underneath it)
+  const tileIntersections = React.useMemo(() => {
+    const intersections = {};
+    const keys = Object.keys(realTilePositions);
+    
+    // Initialize empty array for each tile
+    keys.forEach(key => {
+      intersections[key] = [];
+    });
+
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = 0; j < i; j++) { // Only look at tiles underneath (index j < i)
+        const id1 = keys[j];
+        const id2 = keys[i];
+        const r1 = realTilePositions[id1];
+        const r2 = realTilePositions[id2];
+        if (!r1 || !r2) continue;
+        
+        // Check intersection
+        const intersect = !(r2.left >= r1.left + r1.width ||
+                            r2.left + r2.width <= r1.left ||
+                            r2.top >= r1.top + r1.height ||
+                            r2.top + r2.height <= r1.top);
+        if (intersect) {
+          // Calculate intersection bounds in absolute grid coordinates
+          const left = Math.max(r1.left, r2.left);
+          const top = Math.max(r1.top, r2.top);
+          const right = Math.min(r1.left + r1.width, r2.left + r2.width);
+          const bottom = Math.min(r1.top + r1.height, r2.top + r2.height);
+          
+          const width = right - left;
+          const height = bottom - top;
+          
+          if (width > 0 && height > 0) {
+            // Convert to relative coordinates of tile id2 (which is on top)
+            intersections[id2].push({
+              x: left - r2.left,
+              y: top - r2.top,
+              w: width,
+              h: height
+            });
+          }
+        }
+      }
+    }
+    return intersections;
+  }, [realTilePositions]);
 
   // Render loading screen
   if (isLoading && collections.length === 0) {
@@ -486,409 +762,125 @@ export default function App() {
     );
   }
 
-  return (
-    <div className="app-container">
-      
-      {/* Viewport Tiled Grid */}
-      {collections.length > 0 ? (
-        <div className="viewport-grid" style={{ position: 'relative' }}>
-          {activeCollections.map((collName, index) => {
-            const position = scaledPositions[index] || tilePositions[index] || { left: 20, top: 20, width: 350, height: 467 };
-            
-            return (
-              <div
-                key={collName}
-                style={{
-                  position: 'absolute',
-                  left: `${position.left}px`,
-                  top: `${position.top}px`,
-                  width: `${position.width}px`,
-                  height: `${position.height}px`
-                }}
-              >
-                <SlideshowTile
-                  tileId={index}
-                  collections={activeCollections}
-                  initialCollectionName={collName}
-                  globalSpeed={globalSpeed}
-                  globalIsPlaying={globalIsPlaying}
-                  globalRefreshTrigger={globalRefreshTrigger}
-                  isSingle={activeTileCount === 1}
-                  globalTransitionEffect={globalTransitionEffect}
-                  totalTiles={activeTileCount}
-                  onAspectRatioChange={handleAspectRatioChange}
-                />
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        /* Empty/Error State */
-        <div style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          height: '100%',
-          width: '100%',
-          padding: 24,
-          background: 'radial-gradient(circle at 50% 50%, #111827 0%, #030712 100%)'
-        }}>
-          <div className="glass-panel empty-state">
-            <AlertTriangle size={48} style={{ color: '#f59e0b', filter: 'drop-shadow(0 0 10px rgba(245, 158, 11, 0.4))' }} />
-            <h2 className="empty-state-title">未检测到有效图片集</h2>
-            
-            {fetchError ? (
-              <p className="empty-state-desc" style={{ color: '#ef4444' }}>
-                系统遇到错误: {fetchError}
-              </p>
-            ) : (
-              <p className="empty-state-desc">
-                我们扫描了本地目录，但未发现包含有效图片（JPG, PNG, WEBP等）的子文件夹。<br />
-                默认扫描目录：<code style={{ background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 4, fontSize: '0.8rem', display: 'inline-block', marginTop: 6 }}>{scanDirectory || './resources'}</code>
-              </p>
-            )}
-
-            <div style={{ display: 'flex', gap: 12, marginTop: 10, width: '100%' }}>
-              <button 
-                onClick={fetchCollections} 
-                className="glass-button active"
-                style={{ flex: 1, justifyContent: 'center' }}
-              >
-                <RefreshCw size={14} /> 重新加载
-              </button>
-              <button 
-                onClick={() => setIsSettingsOpen(true)} 
-                className="glass-button"
-                style={{ flex: 1, justifyContent: 'center' }}
-              >
-                <Settings size={14} /> 打开设置
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-
-      {/* Pagination Pill */}
-      {isPaginated && (
-        <div className="glass-panel pagination-deck">
-          <button 
-            type="button"
-            onClick={() => setCurrentPage(prev => Math.max(0, prev - 1))}
-            disabled={currentPage === 0}
-            className="glass-button"
-            style={{ padding: '6px 12px', fontSize: '0.75rem' }}
-          >
-            <ChevronLeft size={14} /> 上一批
-          </button>
-          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-            第 {currentPage + 1} / {totalPages} 批 (每批 {pageSize} 个 / 共 {collections.length} 个)
-          </span>
-          <button 
-            type="button"
-            onClick={() => setCurrentPage(prev => Math.min(totalPages - 1, prev + 1))}
-            disabled={currentPage === totalPages - 1}
-            className="glass-button"
-            style={{ padding: '6px 12px', fontSize: '0.75rem' }}
-          >
-            下一批 <ChevronRight size={14} />
-          </button>
-        </div>
-      )}
-
-      {/* Control HUD */}
-      {collections.length > 0 && (
-        <ControlHUD
-          tileCount={tileCount}
-          setTileCount={setTileCount}
-          isAutoTiling={isAutoTiling}
-          setIsAutoTiling={setIsAutoTiling}
-          globalSpeed={globalSpeed}
-          setGlobalSpeed={setGlobalSpeed}
-          globalIsPlaying={globalIsPlaying}
-          setGlobalIsPlaying={setGlobalIsPlaying}
-          onShuffleAll={shuffleAllTiles}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          collectionsCount={collections.length}
-          scanDirectory={scanDirectory}
-          globalTransitionEffect={globalTransitionEffect}
-          setGlobalTransitionEffect={setGlobalTransitionEffect}
-          sortMethod={sortMethod}
-          setSortMethod={setSortMethod}
-          zoomScale={zoomScale}
-          setZoomScale={setZoomScale}
-          onZoomIn={zoomIn}
-          onZoomOut={zoomOut}
-          zoomSliderRef={zoomSliderRef}
-          isHUDpinned={isHUDpinned}
-          setIsHUDpinned={setIsHUDpinned}
-        />
-      )}
-
-      {/* Settings Drawer Backdrop */}
-      <div 
-        className={`drawer-backdrop ${isSettingsOpen ? 'open' : ''}`}
-        onClick={() => setIsSettingsOpen(false)}
+  if (isMobile) {
+    return (
+      <MobileLayout
+        collections={collections}
+        displayedCollections={displayedCollections}
+        handleCollectionChangeForTile={handleCollectionChangeForTile}
+        globalSpeed={globalSpeed}
+        globalIsPlaying={globalIsPlaying}
+        isDocumentVisible={isDocumentVisible}
+        globalRefreshTrigger={globalRefreshTrigger}
+        activeTileCount={activeTileCount}
+        globalTransitionEffect={globalTransitionEffect}
+        handleAspectRatioChange={handleAspectRatioChange}
+        sortMethod={sortMethod}
+        isLoading={isLoading}
+        fetchError={fetchError}
+        scanDirectory={scanDirectory}
+        fetchCollections={fetchCollections}
+        setIsSettingsOpen={setIsSettingsOpen}
+        isSettingsOpen={isSettingsOpen}
+        tileCount={tileCount}
+        setTileCount={setTileCount}
+        isAutoTiling={isAutoTiling}
+        setIsAutoTiling={setIsAutoTiling}
+        setGlobalSpeed={setGlobalSpeed}
+        setGlobalIsPlaying={setGlobalIsPlaying}
+        shuffleAllTiles={shuffleAllTiles}
+        setGlobalTransitionEffect={setGlobalTransitionEffect}
+        setSortMethod={setSortMethod}
+        zoomScale={zoomScale}
+        setZoomScale={setZoomScale}
+        zoomIn={zoomIn}
+        zoomOut={zoomOut}
+        inputScanDir={inputScanDir}
+        setInputScanDir={setInputScanDir}
+        handleSaveDirectory={handleSaveDirectory}
+        dirError={dirError}
+        isSubmittingDir={isSubmittingDir}
+        fetchCacheInfo={fetchCacheInfo}
+        setCacheMessage={setCacheMessage}
+        cacheInfo={cacheInfo}
+        cacheMessage={cacheMessage}
+        handleClearCache={handleClearCache}
+        isClearingCache={isClearingCache}
+        gridConfig={gridConfig}
+        lanIp={lanIp}
+        isPaginated={isPaginated}
+        currentPage={currentPage}
+        setCurrentPage={setCurrentPage}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        directoryHistory={directoryHistory}
+        onRemoveHistoryItem={handleRemoveHistoryItem}
       />
+    );
+  }
 
-      {/* Settings Drawer Panel */}
-      <div className={`glass-panel settings-drawer ${isSettingsOpen ? 'open' : ''}`}>
-        <div className="drawer-header">
-          <h3 className="drawer-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <FolderOpen size={20} className="text-purple-400" />
-            高级系统设置
-          </h3>
-          <button 
-            className="tile-mini-btn"
-            onClick={() => setIsSettingsOpen(false)}
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        <form onSubmit={handleSaveDirectory} style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 10 }}>
-          <div>
-            <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 8 }}>
-              指定本地照片文件夹路径:
-            </label>
-            <input
-              type="text"
-              className="glass-input"
-              value={inputScanDir}
-              onChange={(e) => setInputScanDir(e.target.value)}
-              placeholder="例如: D:/Photos/Vacation"
-              style={{ width: '100%', fontSize: '0.85rem' }}
-              required
-            />
-            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginTop: 6, lineHeight: 1.4 }}>
-              * 默认扫描项目内的 <code>resources/</code> 目录。您可以指定本地电脑上的任何文件夹，系统会自动扫描该目录下包含图片的<strong>一级子目录</strong>，作为不同的播放"图片集"。
-            </span>
-          </div>
-
-          {dirError && (
-            <div style={{ color: '#f87171', fontSize: '0.75rem', padding: '8px 12px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: 6 }}>
-              {dirError}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={isSubmittingDir}
-            className="glass-button active"
-            style={{ width: '100%', justifyContent: 'center', padding: '10px' }}
-          >
-            {isSubmittingDir ? (
-              <>
-                <RefreshCw size={14} className="animate-spin" />
-                <span>正在重载目录...</span>
-              </>
-            ) : (
-              <>
-                <Save size={14} />
-                <span>确认并重新扫描</span>
-              </>
-            )}
-          </button>
-        </form>
-
-        {/* Layout Info */}
-        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 16 }}>
-          <h4 style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Image size={16} />
-            当前布局
-          </h4>
-          
-          <div style={{  
-            background: 'rgba(139, 92, 246, 0.1)', 
-            border: '1px solid rgba(139, 92, 246, 0.2)',
-            borderRadius: 6, 
-            padding: 10,
-            fontSize: '0.75rem',
-            color: 'var(--text-secondary)',
-            lineHeight: 1.6
-          }}>
-            <div style={{ marginBottom: 6 }}>
-              <strong>分屏模式:</strong> {tileCount} 窗口 ({gridConfig.cols}×{gridConfig.rows})
-            </div>
-            <div style={{ color: 'var(--text-muted)' }}>
-              💡 使用底部缩放条调整窗口大小
-            </div>
-          </div>
-        </div>
-
-        {/* Transition Animation Effect */}
-        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 16 }}>
-          <h4 style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Sparkles size={16} />
-            过渡动画
-          </h4>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {[
-              { id: 'ken-burns', label: '温和缩放' },
-              { id: 'fade', label: '平滑渐变' },
-              { id: 'slide', label: '滑入' },
-              { id: 'none', label: '关闭动画' }
-            ].map(effect => (
-              <button
-                key={effect.id}
-                onClick={() => setGlobalTransitionEffect(effect.id)}
-                style={{
-                  background: globalTransitionEffect === effect.id ? 'var(--accent-purple)' : 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  color: '#fff',
-                  fontSize: '0.7rem',
-                  padding: '4px 10px',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  fontWeight: globalTransitionEffect === effect.id ? '600' : 'normal',
-                  transition: 'var(--transition-smooth)'
-                }}
-              >
-                {effect.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Cache Management Section */}
-        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <h4 style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Database size={16} />
-              缓存管理
-            </h4>
-            <button
-              onClick={() => {
-                fetchCacheInfo();
-                setCacheMessage('');
-              }}
-              className="glass-button"
-              style={{ fontSize: '0.7rem', padding: '4px 10px' }}
-            >
-              <RefreshCw size={12} /> 刷新
-            </button>
-          </div>
-
-          {cacheInfo && (
-            <div style={{ 
-              background: 'rgba(0,0,0,0.2)', 
-              borderRadius: 8, 
-              padding: 12, 
-              marginBottom: 12,
-              fontSize: '0.75rem',
-              lineHeight: 1.6
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ color: 'var(--text-secondary)' }}>缓存文件:</span>
-                <span style={{ color: cacheInfo.cacheExists ? '#10b981' : '#ef4444', fontWeight: 600 }}>
-                  {cacheInfo.cacheExists ? '✓ 存在' : '✗ 不存在'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ color: 'var(--text-secondary)' }}>缓存路径:</span>
-                <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cacheInfo.cachePath}>
-                  {cacheInfo.cachePath}
-                </span>
-              </div>
-              {cacheInfo.cacheExists && (
-                <>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>文件大小:</span>
-                    <span>{(cacheInfo.cacheSize / 1024).toFixed(2)} KB</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>缓存集合数:</span>
-                    <span>{cacheInfo.cachedCollectionsCount || 0}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>缓存图片集数:</span>
-                    <span>{cacheInfo.cachedImagesCount || 0}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>最后更新:</span>
-                    <span>{new Date(cacheInfo.cacheModified).toLocaleString('zh-CN')}</span>
-                  </div>
-                </>
-              )}
-              <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', marginTop: 8, paddingTop: 8 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>内存缓存:</span>
-                  <span style={{ color: cacheInfo.hasMemoryCache ? '#10b981' : '#f59e0b' }}>
-                    {cacheInfo.hasMemoryCache ? '✓ 已加载' : '⚠ 未加载'}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>内存集合数:</span>
-                  <span>{cacheInfo.memoryCollectionsCount}</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {cacheMessage && (
-            <div style={{ 
-              color: cacheMessage.startsWith('✅') ? '#10b981' : '#ef4444',
-              fontSize: '0.75rem', 
-              padding: '8px 12px', 
-              background: cacheMessage.startsWith('✅') ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-              border: `1px solid ${cacheMessage.startsWith('✅') ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`,
-              borderRadius: 6,
-              marginBottom: 12
-            }}>
-              {cacheMessage}
-            </div>
-          )}
-
-          <button
-            onClick={handleClearCache}
-            disabled={isClearingCache}
-            className="glass-button"
-            style={{ 
-              width: '100%', 
-              justifyContent: 'center', 
-              fontSize: '0.75rem',
-              background: 'rgba(239, 68, 68, 0.1)',
-              border: '1px solid rgba(239, 68, 68, 0.2)',
-              color: '#ef4444'
-            }}
-          >
-            {isClearingCache ? (
-              <>
-                <RefreshCw size={14} className="animate-spin" />
-                <span>正在清除...</span>
-              </>
-            ) : (
-              <>
-                <Trash2 size={14} />
-                <span>清除缓存文件</span>
-              </>
-            )}
-          </button>
-          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginTop: 6, lineHeight: 1.4 }}>
-            * 清除缓存后，下次访问时将重新扫描目录并创建新缓存。
-          </span>
-        </div>
-
-        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 'auto' }}>
-          <h4 style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>快捷扫描预设:</h4>
-          <button
-            onClick={() => {
-              setInputScanDir('');
-              fetch('/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ scanDirectory: 'RESET_TO_DEFAULT' })
-              }).then(() => fetchCollections());
-            }}
-            className="glass-button"
-            style={{ width: '100%', justifyContent: 'center', fontSize: '0.75rem', background: 'rgba(255, 255, 255, 0.03)' }}
-          >
-            重置为项目内置 resources/
-          </button>
-        </div>
-      </div>
-
-    </div>
+  return (
+    <DesktopLayout
+      collections={collections}
+      displayedCollections={displayedCollections}
+      scaledPositions={scaledPositions}
+      tilePositions={tilePositions}
+      handleCollectionChangeForTile={handleCollectionChangeForTile}
+      onDragPositionChange={handleTileDrag}
+      overlappingTiles={overlappingTiles}
+      tileIntersections={tileIntersections}
+      globalSpeed={globalSpeed}
+      globalIsPlaying={globalIsPlaying}
+      isDocumentVisible={isDocumentVisible}
+      globalRefreshTrigger={globalRefreshTrigger}
+      activeTileCount={activeTileCount}
+      globalTransitionEffect={globalTransitionEffect}
+      handleAspectRatioChange={handleAspectRatioChange}
+      sortMethod={sortMethod}
+      isLoading={isLoading}
+      fetchError={fetchError}
+      scanDirectory={scanDirectory}
+      fetchCollections={fetchCollections}
+      setIsSettingsOpen={setIsSettingsOpen}
+      isSettingsOpen={isSettingsOpen}
+      isPaginated={isPaginated}
+      currentPage={currentPage}
+      setCurrentPage={setCurrentPage}
+      totalPages={totalPages}
+      pageSize={pageSize}
+      tileCount={tileCount}
+      setTileCount={setTileCount}
+      isAutoTiling={isAutoTiling}
+      setIsAutoTiling={setIsAutoTiling}
+      setGlobalSpeed={setGlobalSpeed}
+      setGlobalIsPlaying={setGlobalIsPlaying}
+      shuffleAllTiles={shuffleAllTiles}
+      setGlobalTransitionEffect={setGlobalTransitionEffect}
+      setSortMethod={setSortMethod}
+      zoomScale={zoomScale}
+      setZoomScale={setZoomScale}
+      zoomIn={zoomIn}
+      zoomOut={zoomOut}
+      zoomSliderRef={zoomSliderRef}
+      isHUDpinned={isHUDpinned}
+      setIsHUDpinned={setIsHUDpinned}
+      inputScanDir={inputScanDir}
+      setInputScanDir={setInputScanDir}
+      handleSaveDirectory={handleSaveDirectory}
+      dirError={dirError}
+      isSubmittingDir={isSubmittingDir}
+      fetchCacheInfo={fetchCacheInfo}
+      setCacheMessage={setCacheMessage}
+      cacheInfo={cacheInfo}
+      cacheMessage={cacheMessage}
+      handleClearCache={handleClearCache}
+      isClearingCache={isClearingCache}
+      gridConfig={gridConfig}
+      showLanModal={showLanModal}
+      setShowLanModal={setShowLanModal}
+      lanIp={lanIp}
+      directoryHistory={directoryHistory}
+      onRemoveHistoryItem={handleRemoveHistoryItem}
+    />
   );
 }

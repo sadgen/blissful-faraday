@@ -4,6 +4,8 @@ import { Play, Pause, ChevronRight, ChevronLeft, Maximize2, Minimize2, Settings,
 export default function SlideshowTile({
   tileId,
   collections,
+  displayedCollections,
+  onCollectionChange,
   initialCollectionName,
   globalSpeed,
   globalIsPlaying,
@@ -11,7 +13,11 @@ export default function SlideshowTile({
   isSingle,
   globalTransitionEffect,
   onAspectRatioChange,
-  totalTiles
+  totalTiles,
+  sortMethod,
+  onDragPositionChange,
+  isOverlapping,
+  intersections = []
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [images, setImages] = useState([]);
@@ -44,12 +50,14 @@ export default function SlideshowTile({
 
   // Preload cache for faster image switching
   const preloadCacheRef = useRef(new Map());
-  const PRELOAD_COUNT = 5; // Preload next 5 images
+  const PRELOAD_COUNT = 1; // Only preload the next 1 image instead of 5
 
   const activeIdxRef = useRef(activeIdx);
   const imagesRef = useRef(images);
   const currentCollNameRef = useRef(currentCollName);
   const collectionsRef = useRef(collections);
+  const displayedCollectionsRef = useRef(displayedCollections);
+  const sortMethodRef = useRef(sortMethod);
   
   const [barDuration, setBarDuration] = useState(globalSpeed);
   const [tileAspectRatio, setTileAspectRatio] = useState(null);
@@ -60,6 +68,15 @@ export default function SlideshowTile({
       onAspectRatioChange(tileId, tileAspectRatio);
     }
   }, [tileAspectRatio, tileId, onAspectRatioChange]);
+
+  // Reset drag position when layout refreshes/shuffles
+  useEffect(() => {
+    setDragPosition({ x: 0, y: 0 });
+    positionRef.current = { x: 0, y: 0 };
+    if (onDragPositionChange) {
+      onDragPositionChange(tileId, { x: 0, y: 0 });
+    }
+  }, [globalRefreshTrigger, initialCollectionName, totalTiles, tileId]);
 
   // Sync refs with state values
   useEffect(() => {
@@ -77,6 +94,14 @@ export default function SlideshowTile({
   useEffect(() => {
     collectionsRef.current = collections;
   }, [collections]);
+
+  useEffect(() => {
+    displayedCollectionsRef.current = displayedCollections;
+  }, [displayedCollections]);
+
+  useEffect(() => {
+    sortMethodRef.current = sortMethod;
+  }, [sortMethod]);
   
   const [isLoadingImages, setIsLoadingImages] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -190,13 +215,12 @@ export default function SlideshowTile({
         
         setActiveIdx(startIdx);
         setOutgoingIdx(null);
-        resetProgressBar();
         
         // Detect aspect ratio of first image
         if (data.images && data.images.length > 0) {
           detectAspectRatio(currentCollName, data.images[0]);
-          // Preload first few images
-          setTimeout(() => preloadImages(0, PRELOAD_COUNT), 100);
+          // Delay preloading the next image by 1.5 seconds to let the initial grid load instantly without network congestion
+          setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1500);
         }
       } catch (err) {
         console.error(err);
@@ -218,15 +242,78 @@ export default function SlideshowTile({
 
   // Handle global shuffle/refresh trigger
   useEffect(() => {
-    if (collections.length > 0) {
+    // Only randomize if no initialCollectionName prop is passed
+    if (collections.length > 0 && !initialCollectionName) {
       selectRandomCollection();
     }
-  }, [globalRefreshTrigger]);
+  }, [globalRefreshTrigger, initialCollectionName]);
+
+  const getNextUniqueCollection = (direction) => {
+    const allColls = collectionsRef.current;
+    if (allColls.length <= 1) return currentCollNameRef.current;
+
+    const currentCollNameVal = currentCollNameRef.current;
+
+    // Get folders shown in OTHER tiles to avoid conflict
+    const otherDisplayedColls = (displayedCollectionsRef.current || [])
+      .filter((_, idx) => idx !== tileId);
+
+    // 1. Pure random mode: pick a dynamic random unique folder every time
+    if (sortMethodRef.current === 'random') {
+      const candidates = allColls.filter(c => !otherDisplayedColls.includes(c) && c !== currentCollNameVal);
+      if (candidates.length > 0) {
+        return candidates[Math.floor(Math.random() * candidates.length)];
+      }
+      const fallbackCandidates = allColls.filter(c => !otherDisplayedColls.includes(c));
+      if (fallbackCandidates.length > 0) {
+        return fallbackCandidates[Math.floor(Math.random() * fallbackCandidates.length)];
+      }
+      const otherColls = allColls.filter(c => c !== currentCollNameVal);
+      const listToPick = otherColls.length > 0 ? otherColls : allColls;
+      return listToPick[Math.floor(Math.random() * listToPick.length)];
+    }
+
+    // 2. Sequential modes (name / date):
+    const currentIdxInCollections = allColls.indexOf(currentCollNameVal);
+    if (currentIdxInCollections !== -1) {
+      for (let i = 1; i <= allColls.length; i++) {
+        const nextIdx = (currentIdxInCollections + i * direction + allColls.length * i) % allColls.length;
+        const candidate = allColls[nextIdx];
+        if (!otherDisplayedColls.includes(candidate)) {
+          return candidate;
+        }
+      }
+      // Fallback: standard next folder
+      const fallbackIdx = (currentIdxInCollections + direction + allColls.length) % allColls.length;
+      return allColls[fallbackIdx];
+    }
+    return allColls[0];
+  };
 
   const selectRandomCollection = () => {
-    if (collections.length === 0) return;
-    const randomCollName = collections[Math.floor(Math.random() * collections.length)];
-    setCurrentCollName(randomCollName);
+    const allColls = collectionsRef.current;
+    if (allColls.length === 0) return;
+
+    // Get folders shown in OTHER tiles to avoid conflict
+    const otherDisplayedColls = (displayedCollectionsRef.current || [])
+      .filter((_, idx) => idx !== tileId);
+
+    const candidates = allColls.filter(c => !otherDisplayedColls.includes(c));
+
+    let chosenColl;
+    if (candidates.length > 0) {
+      chosenColl = candidates[Math.floor(Math.random() * candidates.length)];
+    } else {
+      // Fallback: pick any random collection other than the current one if possible
+      const otherColls = allColls.filter(c => c !== currentCollNameRef.current);
+      const listToPick = otherColls.length > 0 ? otherColls : allColls;
+      chosenColl = listToPick[Math.floor(Math.random() * listToPick.length)];
+    }
+
+    setCurrentCollName(chosenColl);
+    if (onCollectionChange) {
+      onCollectionChange(tileId, chosenColl);
+    }
   };
 
   // Speed calculation: duration in milliseconds per slide
@@ -299,12 +386,14 @@ export default function SlideshowTile({
       if (timerRef.current) clearInterval(timerRef.current);
       if (staggerTimeoutRef.current) clearTimeout(staggerTimeoutRef.current);
     };
-  }, [isPlaying, duration, totalTiles, tileId, images.length]);
+  }, [isPlaying, duration, totalTiles, tileId]);
 
   // Preload images ahead of time for faster switching
-  // Optimized: fetch headers first for dimensions, then load full image
+  // Optimized: Load directly via Image without redundant Range headers, saving massive bandwidth
   const preloadImages = (startIdx, count) => {
     const currentImages = imagesRef.current;
+    if (currentImages.length <= 1) return;
+    
     const cache = preloadCacheRef.current;
     
     for (let i = 0; i < count; i++) {
@@ -317,40 +406,18 @@ export default function SlideshowTile({
       
       const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(imgName)}`;
       
-      // Step 1: Fetch headers for dimensions
-      fetch(imgUrl, { 
-        method: 'GET',
-        headers: { 'Range': 'bytes=0-65535' }
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Fetch failed');
-        return response.arrayBuffer();
-      })
-      .then(buffer => {
-        const dimensions = getImageDimensions(buffer);
-        const aspectRatio = dimensions ? dimensions.width / dimensions.height : null;
+      const img = new Image();
+      img.onload = () => {
+        // Store in cache with its aspect ratio
+        cache.set(cacheKey, { img, aspectRatio: img.width / img.height });
         
-        // Step 2: Load full image
-        const img = new Image();
-        img.onload = () => {
-          // Store in cache with aspect ratio
-          cache.set(cacheKey, { img, aspectRatio: img.width / img.height });
-          // Keep cache size manageable
-          if (cache.size > PRELOAD_COUNT * 3) {
-            const firstKey = cache.keys().next().value;
-            if (firstKey) cache.delete(firstKey);
-          }
-        };
-        img.src = imgUrl;
-      })
-      .catch(() => {
-        // Fallback: load image directly
-        const img = new Image();
-        img.onload = () => {
-          cache.set(cacheKey, { img, aspectRatio: img.width / img.height });
-        };
-        img.src = imgUrl;
-      });
+        // Keep cache size manageable
+        if (cache.size > 5) {
+          const firstKey = cache.keys().next().value;
+          if (firstKey) cache.delete(firstKey);
+        }
+      };
+      img.src = imgUrl;
     }
   };
 
@@ -487,21 +554,13 @@ export default function SlideshowTile({
 
   // Skip to next collection directly (for middle-click)
   const skipToNextCollection = () => {
-    const allColls = collectionsRef.current;
-    if (allColls.length <= 1) return;
-    
-    const currentCollNameVal = currentCollNameRef.current;
-    const currentIdxInCollections = allColls.indexOf(currentCollNameVal);
-    
-    if (currentIdxInCollections !== -1) {
-      const nextCollIdx = (currentIdxInCollections + 1) % allColls.length;
-      const nextCollName = allColls[nextCollIdx];
-      
-      setCurrentCollName(nextCollName);
-      setActiveIdx(0);
-      setOutgoingIdx(null);
-      resetProgressBar();
+    const nextCollName = getNextUniqueCollection(1);
+    setCurrentCollName(nextCollName);
+    if (onCollectionChange) {
+      onCollectionChange(tileId, nextCollName);
     }
+    setActiveIdx(0);
+    setOutgoingIdx(null);
   };
 
   // Middle-click handler to skip to next folder
@@ -515,6 +574,11 @@ export default function SlideshowTile({
     
     // Left mouse button for drag
     if (e.button === 0) {
+      // Ignore drag if clicking on interactive controls
+      if (e.target.closest('button, select, option, input, svg, path')) {
+        return;
+      }
+      e.preventDefault(); // Prevents browser text selection/ghost drag
       // Start drag from mouse down position
       dragStartRef.current = { x: e.clientX, y: e.clientY };
       positionRef.current = { x: dragPosition.x, y: dragPosition.y };
@@ -543,6 +607,10 @@ export default function SlideshowTile({
       positionRef.current = { x: dragPosition.x, y: dragPosition.y };
       // Reset dragStartRef for next drag
       dragStartRef.current = { x: 0, y: 0 };
+      
+      if (onDragPositionChange) {
+        onDragPositionChange(tileId, dragPosition);
+      }
     }
   };
 
@@ -567,45 +635,32 @@ export default function SlideshowTile({
     
     let nextIdx = currentIdx + direction;
     const currentCollNameVal = currentCollNameRef.current;
-    const allColls = collectionsRef.current;
     
     if (nextIdx >= currentImages.length) {
       // Finished the current folder, cycle to the next collection!
-      const currentIdxInCollections = allColls.indexOf(currentCollNameVal);
-      
-      if (currentIdxInCollections !== -1 && allColls.length > 1) {
-        const nextCollIdx = (currentIdxInCollections + 1) % allColls.length;
-        const nextCollName = allColls[nextCollIdx];
-        
-        setCurrentCollName(nextCollName);
-        // Reset to first image - will load and get aspect ratio in useEffect
-        setActiveIdx(0);
-        setOutgoingIdx(null);
-        resetProgressBar();
-        return;
-      } else {
-        // Fallback to loop if 1 collection
-        nextIdx = 0;
+      const nextCollName = getNextUniqueCollection(1);
+      setCurrentCollName(nextCollName);
+      if (onCollectionChange) {
+        onCollectionChange(tileId, nextCollName);
       }
+      // Reset to first image - will load and get aspect ratio in useEffect
+      setActiveIdx(0);
+      setOutgoingIdx(null);
+      resetProgressBar();
+      return;
     } else if (nextIdx < 0) {
       // Going backwards past 0: cycle to previous collection's last image!
-      const currentIdxInCollections = allColls.indexOf(currentCollNameVal);
-      
-      if (currentIdxInCollections !== -1 && allColls.length > 1) {
-        const prevCollIdx = (currentIdxInCollections - 1 + allColls.length) % allColls.length;
-        const prevCollName = allColls[prevCollIdx];
-        
-        shouldStartFromLastRef.current = true;
-        setCurrentCollName(prevCollName);
-        // Will be set to last image in fetchImages useEffect
-        setActiveIdx(0);
-        setOutgoingIdx(null);
-        resetProgressBar();
-        return;
-      } else {
-        // Fallback to loop if 1 collection
-        nextIdx = currentImages.length - 1;
+      const nextCollName = getNextUniqueCollection(-1);
+      shouldStartFromLastRef.current = true;
+      setCurrentCollName(nextCollName);
+      if (onCollectionChange) {
+        onCollectionChange(tileId, nextCollName);
       }
+      // Will be set to last image in fetchImages useEffect
+      setActiveIdx(0);
+      setOutgoingIdx(null);
+      resetProgressBar();
+      return;
     }
     
     // Pre-load image first, then update aspect ratio and display
@@ -662,16 +717,32 @@ export default function SlideshowTile({
     ? { transform: `translate(${dragPosition.x}px, ${dragPosition.y}px)`, zIndex: 1000, cursor: isDragging ? 'grabbing' : 'grab' }
     : {};
 
+  // Apply 50% opacity when dragging
+  if (isDragging) {
+    dragTransform.opacity = 0.5;
+  }
+
+  // Apply overlap mask when not maximized, not dragging, and there are intersections
+  const maskStyle = !isMaximized && !isDragging && intersections && intersections.length > 0
+    ? {
+        maskImage: `url(#tile-mask-${tileId})`,
+        WebkitMaskImage: `url(#tile-mask-${tileId})`
+      }
+    : {};
+
   // Helper function for image URL
   const getImageUrl = (imgName) => {
     return `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(imgName)}`;
   };
 
   const handleCollectionChange = (e) => {
-    setCurrentCollName(e.target.value);
+    const nextCollName = e.target.value;
+    setCurrentCollName(nextCollName);
+    if (onCollectionChange) {
+      onCollectionChange(tileId, nextCollName);
+    }
     setActiveIdx(0);
     setOutgoingIdx(null);
-    resetProgressBar();
   };
 
   if (collections.length === 0) {
@@ -689,7 +760,7 @@ export default function SlideshowTile({
     <div 
       ref={tileRef}
       className={`slideshow-tile effect-${transitionEffect} ${isMaximized ? 'maximized' : ''} ${showConfig ? 'show-controls' : ''}`}
-      style={{ ...tileStyle, ...dragTransform }}
+      style={{ ...tileStyle, ...dragTransform, ...maskStyle }}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
@@ -749,6 +820,7 @@ export default function SlideshowTile({
                   src={getImageUrl(imgName)}
                   alt=""
                   decoding="async"
+                  draggable="false"
                   className="slide-image-blur"
                 />
                 {/* Sharp contained foreground image */}
@@ -756,6 +828,7 @@ export default function SlideshowTile({
                   src={getImageUrl(imgName)}
                   alt={imgName}
                   decoding="async"
+                  draggable="false"
                   className="slide-image-main"
                 />
               </div>

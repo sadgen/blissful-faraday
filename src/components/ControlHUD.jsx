@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Pause, Shuffle, Settings, Columns, Image, Sliders, ChevronUp, ChevronDown, Sparkles, ZoomIn, ZoomOut } from 'lucide-react';
+import { Play, Pause, Shuffle, Settings, Columns, Image, Sliders, ChevronUp, ChevronDown, Sparkles, ZoomIn, ZoomOut, FolderOpen, ArrowUpDown } from 'lucide-react';
 
 // Allowed tile counts
 const ALLOWED_TILE_COUNTS = [1, 3, 5, 12];
@@ -159,6 +159,56 @@ export default function ControlHUD({
                 }}
               >
                 {sec}s
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Folder Sorting */}
+        <div className="hud-section hud-section-compact">
+          <span className="hud-label" style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', fontSize: '0.65rem' }}>
+            <ArrowUpDown size={11} /> 排序
+          </span>
+          <div style={{ display: 'flex', gap: 3, background: 'rgba(0,0,0,0.2)', padding: '2px', borderRadius: '6px' }}>
+            {[
+              { id: 'name', label: '名称', title: '按文件夹名称排序' },
+              { id: 'date', label: '时间', title: '按最后修改时间排序' },
+              { id: 'random', label: '随机', title: '纯随机顺序' }
+            ].map(method => (
+              <button
+                key={method.id}
+                onClick={() => {
+                  if (method.id === 'random' && sortMethod === 'random') {
+                    onShuffleAll();
+                  } else {
+                    setSortMethod(method.id);
+                  }
+                }}
+                style={{
+                  background: sortMethod === method.id ? 'var(--accent-purple)' : 'transparent',
+                  border: 'none',
+                  color: sortMethod === method.id ? '#fff' : 'var(--text-secondary)',
+                  fontSize: '0.6rem',
+                  padding: '2px 8px',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: sortMethod === method.id ? 'bold' : 'normal',
+                  transition: 'var(--transition-smooth)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: method.id === 'random' && sortMethod === 'random' ? 4 : 0
+                }}
+                title={method.id === 'random' && sortMethod === 'random' ? '点击重新随机打乱' : method.title}
+              >
+                <span>{method.label}</span>
+                {method.id === 'random' && sortMethod === 'random' && (
+                  <Shuffle 
+                    size={9} 
+                    style={{
+                      transition: 'transform 0.3s ease'
+                    }} 
+                  />
+                )}
               </button>
             ))}
           </div>

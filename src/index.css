@@ -230,12 +230,13 @@ html, body, #root, .app-container {
   background: #000;
   transition: background 0.6s cubic-bezier(0.4, 0, 0.2, 1); /* Only animate background, not layout */
   overflow: hidden; /* Prevent scrollbars */
+  isolation: isolate; /* Localize stacking contexts for absolute children */
 }
 
 /* Sub-window (Slideshow Tile) Container */
 .slideshow-tile {
   position: absolute;
-  background-color: transparent;
+  background-color: #000;
   overflow: visible;
   display: flex;
   justify-content: center;
@@ -245,15 +246,32 @@ html, body, #root, .app-container {
   /* Use CSS containment to boost rendering performance for huge images */
   contain: layout paint style;
   
-  /* Overlap transparency effect */
-  opacity: 0.85;
+  /* Overlap transparency effect via normal opacity */
+  opacity: 1;
+  mix-blend-mode: normal;
+  filter: none;
   z-index: 1;
   box-shadow: none;
   border: none; /* No border to prevent overflow */
+
+  /* Prevent text and element selection during drag */
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+/* Prevent image dragging and ghost selection */
+.slideshow-tile img {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 
 .slideshow-tile:hover {
   opacity: 1; /* Full opacity on hover */
+  filter: none; /* Reset brightness filter on hover */
   z-index: 1000; /* Bring to front on hover */
   box-shadow: 0 4px 20px rgba(139, 92, 246, 0.3);
   border: 1px solid rgba(139, 92, 246, 0.4);
@@ -676,4 +694,99 @@ html, body, #root, .app-container {
   opacity: 0.3;
   pointer-events: none;
 }
+
+/* History items styling */
+.history-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 12px;
+}
+
+.history-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 140px;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.history-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.history-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.history-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  width: 100%;
+  text-align: left;
+  color: var(--text-secondary);
+}
+
+.history-item:hover {
+  background: rgba(139, 92, 246, 0.12);
+  border-color: rgba(139, 92, 246, 0.25);
+  color: #fff;
+  transform: translateX(2px);
+}
+
+.history-item-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 8px;
+  direction: rtl; /* Truncate parent paths first */
+  text-align: left;
+}
+
+.history-item-delete {
+  opacity: 0.5;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  padding: 3px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.history-item-delete:hover {
+  opacity: 1;
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
+
 
