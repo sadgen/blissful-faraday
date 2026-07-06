@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, X, ChevronRight, ChevronLeft, Maximize2, Minimize2 } from 'lucide-react';
 
 export default function MobileSlideshowCard({
@@ -516,7 +516,7 @@ export default function MobileSlideshowCard({
     
     longPressTimeoutRef.current = setTimeout(() => {
       isLongPressTriggeredRef.current = true;
-      if (navigator.vibrate) {
+      if ("vibrate" in navigator) {
         try { navigator.vibrate(50); } catch (err) {}
       }
       skipToNextCollection(1); // 更换文件夹 (similar to PC middle-click)
@@ -786,6 +786,7 @@ export default function MobileSlideshowCard({
                   <img
                     src={getImageUrl(imgName)}
                     alt={imgName}
+                    loading="lazy"
                     className="mobile-card-image"
                     style={{
                       transform: isSwiping 

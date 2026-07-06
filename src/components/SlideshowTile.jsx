@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Play, Pause, ChevronRight, ChevronLeft, Maximize2, Minimize2, Settings, Shuffle, HelpCircle } from 'lucide-react';
 
 export default function SlideshowTile({
@@ -818,18 +818,10 @@ export default function SlideshowTile({
                 key={imgName}
                 className={`slide-image-container ${isActive ? 'active' : ''} ${isOutgoing ? 'outgoing' : ''}`}
               >
-                {/* Blurred background for premium aspect ratio fill */}
-                <img
-                  src={getImageUrl(imgName)}
-                  alt=""
-                  decoding="async"
-                  draggable="false"
-                  className="slide-image-blur"
-                />
-                {/* Sharp contained foreground image */}
                 <img
                   src={getImageUrl(imgName)}
                   alt={imgName}
+                  loading="lazy"
                   decoding="async"
                   draggable="false"
                   className="slide-image-main"

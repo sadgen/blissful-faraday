@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Play, Pause, Shuffle, Settings, Columns, Image, Sliders, ChevronUp, ChevronDown, Sparkles, ZoomIn, ZoomOut, FolderOpen, ArrowUpDown } from 'lucide-react';
 
 // Allowed tile counts
@@ -44,7 +44,7 @@ export default function ControlHUD({
         {/* Brand/Status Info */}
         <div className="hud-section hud-section-compact">
           <div className="hud-title-brand" style={{ fontSize: '0.9rem' }}>
-            <Image size={16} className="text-purple-400" />
+            <Image size={16} style={{ color: '#a855f7' }} />
             <span>BLISSFUL FARADAY</span>
           </div>
         </div>

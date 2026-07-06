@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { 
   Shield, Key, Users, ScrollText, Lock, Unlock, 
   Smartphone, Laptop, RefreshCw, Trash2, LogOut, CheckCircle, AlertCircle 
@@ -45,7 +45,7 @@ export default function SecurityCenter({
           textAlign: 'center',
           color: 'var(--text-secondary)'
         }}>
-          <Shield size={36} className="text-purple-400" style={{ filter: 'drop-shadow(0 0 8px rgba(168, 85, 247, 0.3))' }} />
+          <Shield size={36} style={{ color: '#a855f7', filter: 'drop-shadow(0 0 8px rgba(168, 85, 247, 0.3))' }} />
           <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#fff' }}>安全中心 (静态托管模式)</div>
           <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.4, margin: '4px 0' }}>
             系统检测到当前画廊运行在静态网站托管或 Serverless CDN 上。
@@ -107,7 +107,7 @@ export default function SecurityCenter({
 
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
-        <RefreshCw size={16} className="animate-spin text-purple-400" style={{ animation: 'spin 1.5s linear infinite', marginRight: 8 }} />
+        <RefreshCw size={16} style={{ color: '#a855f7', animation: 'spin 1.5s linear infinite', marginRight: 8 }} />
         正在加载安全后台 data...
       </div>
     );
@@ -223,7 +223,7 @@ export default function SecurityCenter({
       <div className="ios-switch-container">
         <div className="ios-switch-label">
           <span className="ios-switch-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            {adminConfig.enabled ? <Lock size={14} className="text-purple-400" /> : <Unlock size={14} className="text-gray-400" />}
+            {adminConfig.enabled ? <Lock size={14} style={{ color: '#a855f7' }} /> : <Unlock size={14} style={{ color: '#9ca3af' }} />}
             局域网密码访问保护
           </span>
           <span className="ios-switch-desc">
@@ -368,7 +368,7 @@ export default function SecurityCenter({
               return (
                 <div key={idx} className="device-item">
                   <div style={{ color: 'var(--text-secondary)', flexShrink: 0 }}>
-                    {info.isMobile ? <Smartphone size={16} className="text-purple-400" /> : <Laptop size={16} className="text-blue-400" />}
+                    {info.isMobile ? <Smartphone size={16} style={{ color: '#a855f7' }} /> : <Laptop size={16} style={{ color: '#60a5fa' }} />}
                   </div>
                   <div className="device-info">
                     <div className="device-meta">

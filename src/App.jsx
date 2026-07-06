@@ -151,9 +151,6 @@ export default function App() {
   const [isClearingCache, setIsClearingCache] = useState(false);
   const [cacheMessage, setCacheMessage] = useState('');
 
-  const [currentPage, setCurrentPage] = useState(0);
-  const pageSize = 12;
-
     const [sortMethod, setSortMethod] = useState(savedConfig?.sortMethod || 'random');
   const [randomTrigger, setRandomTrigger] = useState(0);
   
@@ -348,10 +345,6 @@ export default function App() {
     
     return unique.map(item => item.name);
   }, [rawCollections, sortMethod, randomTrigger]);
-
-  useEffect(() => {
-    setCurrentPage(0);
-  }, [rawCollections, sortMethod, tileCount]);
 
   // Fetch collections from API
   const fetchCollections = async () => {
@@ -754,9 +747,6 @@ export default function App() {
     }
   };
 
-  const isPaginated = false;
-  const totalPages = 1;
-
   // Active collections for display - matches exactly the active split screen count
   const activeCollections = React.useMemo(() => {
     return collections.slice(0, tileCount || collections.length);
@@ -886,16 +876,10 @@ export default function App() {
         background: '#06080d',
         gap: 16
       }}>
-        <RefreshCw size={32} className="animate-spin text-purple-400" style={{ animation: 'spin 2s linear infinite' }} />
+        <RefreshCw size={32} style={{ color: '#a855f7' }} className="opencode-spin" />
         <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>
           正在校验安全状态...
         </span>
-        <style dangerouslySetInnerHTML={{__html: `
-          @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-          }
-        `}} />
       </div>
     );
   }
@@ -917,16 +901,10 @@ export default function App() {
         background: '#06080d',
         gap: 16
       }}>
-        <RefreshCw size={32} className="animate-spin text-purple-400" style={{ animation: 'spin 2s linear infinite' }} />
+        <RefreshCw size={32} style={{ color: '#a855f7' }} className="opencode-spin" />
         <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>
           正在扫描本地图片集...
         </span>
-        <style dangerouslySetInnerHTML={{__html: `
-          @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-          }
-        `}} />
       </div>
     );
   }
@@ -977,11 +955,6 @@ export default function App() {
         isClearingCache={isClearingCache}
         gridConfig={gridConfig}
         lanIp={lanIp}
-        isPaginated={isPaginated}
-        currentPage={currentPage}
-        setCurrentPage={setCurrentPage}
-        totalPages={totalPages}
-        pageSize={pageSize}
         directoryHistory={directoryHistory}
         onRemoveHistoryItem={handleRemoveHistoryItem}
         adminConfig={adminConfig}
@@ -1019,11 +992,6 @@ export default function App() {
       fetchCollections={fetchCollections}
       setIsSettingsOpen={setIsSettingsOpen}
       isSettingsOpen={isSettingsOpen}
-      isPaginated={isPaginated}
-      currentPage={currentPage}
-      setCurrentPage={setCurrentPage}
-      totalPages={totalPages}
-      pageSize={pageSize}
       tileCount={tileCount}
       setTileCount={setTileCount}
       isAutoTiling={isAutoTiling}

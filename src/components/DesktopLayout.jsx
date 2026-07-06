@@ -1,7 +1,7 @@
 import React from 'react';
 import { 
   RefreshCw, FolderOpen, Save, X, Settings, Image, 
-  AlertTriangle, ChevronLeft, ChevronRight, Trash2, Sparkles, History, Shield
+  AlertTriangle, Trash2, Sparkles, History, Shield
 } from 'lucide-react';
 import SlideshowTile from './SlideshowTile';
 import ControlHUD from './ControlHUD';
@@ -30,11 +30,6 @@ export default function DesktopLayout({
   fetchCollections,
   setIsSettingsOpen,
   isSettingsOpen,
-  isPaginated,
-  currentPage,
-  setCurrentPage,
-  totalPages,
-  pageSize,
   tileCount,
   setTileCount,
   isAutoTiling,
@@ -226,33 +221,6 @@ export default function DesktopLayout({
         </div>
       )}
 
-      {/* Pagination Pill */}
-      {isPaginated && (
-        <div className="glass-panel pagination-deck">
-          <button 
-            type="button"
-            onClick={() => setCurrentPage(prev => Math.max(0, prev - 1))}
-            disabled={currentPage === 0}
-            className="glass-button"
-            style={{ padding: '6px 12px', fontSize: '0.75rem' }}
-          >
-            <ChevronLeft size={14} /> 上一批
-          </button>
-          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-            第 {currentPage + 1} / {totalPages} 批 (每批 {pageSize} 个 / 共 {collections.length} 个)
-          </span>
-          <button 
-            type="button"
-            onClick={() => setCurrentPage(prev => Math.min(totalPages - 1, prev + 1))}
-            disabled={currentPage === totalPages - 1}
-            className="glass-button"
-            style={{ padding: '6px 12px', fontSize: '0.75rem' }}
-          >
-            下一批 <ChevronRight size={14} />
-          </button>
-        </div>
-      )}
-
       {/* Control HUD */}
       {collections.length > 0 && (
         <ControlHUD
@@ -293,7 +261,7 @@ export default function DesktopLayout({
       <div className={`glass-panel settings-drawer ${isSettingsOpen ? 'open' : ''}`}>
         <div className="drawer-header">
           <h3 className="drawer-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <FolderOpen size={20} className="text-purple-400" />
+            <FolderOpen size={20} style={{ color: '#a855f7' }} />
             高级系统设置
           </h3>
           <button 
@@ -432,7 +400,7 @@ export default function DesktopLayout({
               >
                 {isSubmittingDir ? (
                   <>
-                    <RefreshCw size={14} className="animate-spin" />
+                    <RefreshCw size={14} style={{ animation: 'spin 1s linear infinite' }} />
                     <span>正在重载目录...</span>
                   </>
                 ) : (

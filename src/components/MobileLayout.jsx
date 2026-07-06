@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Play, Pause, Settings, ChevronLeft, ChevronRight, Image as ImageIcon, ZoomIn, ZoomOut } from 'lucide-react';
+import { Play, Pause, Settings, Image as ImageIcon, ZoomIn, ZoomOut } from 'lucide-react';
 import MobileSlideshowCard from './MobileSlideshowCard';
 import MobileControlSheet from './MobileControlSheet';
 import '../mobile.css';
@@ -138,11 +138,6 @@ export default function MobileLayout({
   isClearingCache,
   gridConfig,
   lanIp,
-  isPaginated,
-  currentPage,
-  setCurrentPage,
-  totalPages,
-  pageSize,
   directoryHistory = [],
   onRemoveHistoryItem,
   // Security props
@@ -355,35 +350,6 @@ export default function MobileLayout({
           >
             <Settings size={18} />
           </button>
-
-          {/* Pagination Deck (Only display when pagination is needed) */}
-          {isPaginated && (
-            <div className="mobile-pill-paginator">
-              <button 
-                type="button"
-                className="mobile-pill-btn"
-                onClick={() => setCurrentPage(prev => Math.max(0, prev - 1))}
-                disabled={currentPage === 0}
-                style={{ width: 32, height: 32, opacity: currentPage === 0 ? 0.4 : 1 }}
-              >
-                <ChevronLeft size={14} />
-              </button>
-              
-              <span className="mobile-pill-page-text">
-                {currentPage + 1} / {totalPages} 批
-              </span>
-
-              <button 
-                type="button"
-                className="mobile-pill-btn"
-                onClick={() => setCurrentPage(prev => Math.min(totalPages - 1, prev + 1))}
-                disabled={currentPage === totalPages - 1}
-                style={{ width: 32, height: 32, opacity: currentPage === totalPages - 1 ? 0.4 : 1 }}
-              >
-                <ChevronRight size={14} />
-              </button>
-            </div>
-          )}
 
           {/* Central Play/Pause button */}
           <button 

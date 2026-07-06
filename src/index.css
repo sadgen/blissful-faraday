@@ -326,19 +326,6 @@ html, body, #root, .app-container {
   z-index: 0;
 }
 
-/* Blurred background for premium aspect ratio fill */
-.slide-image-blur {
-  position: absolute;
-  inset: -20px;
-  width: calc(100% + 40px);
-  height: calc(100% + 40px);
-  object-fit: cover;
-  filter: blur(30px) brightness(0.3); /* Increased blur and decreased brightness */
-  opacity: 0.4; /* Reduced opacity to make main image more prominent */
-  z-index: 0;
-  pointer-events: none;
-}
-
 /* Foreground image fill frame - cover mode for better space usage */
 .slide-image-main {
   position: absolute;
@@ -1130,6 +1117,15 @@ html, body, #root, .app-container {
 .device-kick-btn:hover {
   background: rgba(239, 68, 68, 0.2);
   border-color: #ef4444;
+}
+
+.opencode-spin {
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 

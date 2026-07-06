@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Lock, Eye, EyeOff, Loader2, ArrowRight } from 'lucide-react';
 
 export default function LoginOverlay({ onLoginSuccess }) {
@@ -46,7 +46,7 @@ export default function LoginOverlay({ onLoginSuccess }) {
         {/* Header */}
         <div className="login-header">
           <div className="login-icon-wrap">
-            <Lock size={24} className="text-purple-400" />
+            <Lock size={24} style={{ color: '#a855f7' }} />
           </div>
           <h2 className="login-title">BLISSFUL FARADAY</h2>
           <p className="login-subtitle">画廊受密码保护，请输入访问密码</p>
@@ -97,7 +97,7 @@ export default function LoginOverlay({ onLoginSuccess }) {
           >
             {isLoading ? (
               <>
-                <Loader2 size={16} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
+                <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
                 <span>正在验证安全证书...</span>
               </>
             ) : (
