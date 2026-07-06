@@ -205,8 +205,8 @@ export default function MobileControlSheet({
                 }}>
                   <input
                     type="range"
-                    min="1"
-                    max="30"
+                    min="0.5"
+                    max="5"
                     step="0.5"
                     value={globalSpeed / 1000}
                     onChange={(e) => setGlobalSpeed(parseFloat(e.target.value) * 1000)}

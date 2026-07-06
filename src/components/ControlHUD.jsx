@@ -182,8 +182,8 @@ export default function ControlHUD({
             </span>
             <input
               type="range"
-              min="1"
-              max="30"
+              min="0.5"
+              max="5"
               step="0.5"
               value={speedInSeconds}
               onChange={(e) => setGlobalSpeed(parseFloat(e.target.value) * 1000)}
