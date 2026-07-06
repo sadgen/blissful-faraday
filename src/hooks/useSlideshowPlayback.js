@@ -52,6 +52,9 @@ export default function useSlideshowPlayback({
     setTimeout(() => setProgressBarReset(false), 20);
   }, []);
 
+  const resetProgressBarRef = useRef(resetProgressBar);
+  resetProgressBarRef.current = resetProgressBar;
+
   // Cleanup wheel pause timeout on unmount
   useEffect(() => {
     return () => {
@@ -146,6 +149,9 @@ export default function useSlideshowPlayback({
       getNextUniqueCollection, setCurrentCollName, onCollectionChange,
       tileId, setActiveIdx, preloadAndAdvance, shouldStartFromLastRef]);
 
+  const advanceSlideRef = useRef(advanceSlide);
+  advanceSlideRef.current = advanceSlide;
+
   // --- Wheel handler ---
 
   const handleWheel = useCallback((e) => {
@@ -209,8 +215,8 @@ export default function useSlideshowPlayback({
     // Sync mode: parent drives all tiles via syncTrigger
     if (isSyncMode) {
       if (isPlaying && activeIdx >= 0 && imagesRef.current.length > 0) {
-        advanceSlide(1);
-        resetProgressBar();
+        advanceSlideRef.current(1);
+        resetProgressBarRef.current();
       }
       return;
     }
@@ -220,8 +226,8 @@ export default function useSlideshowPlayback({
 
     if (isPlaying) {
       const scheduleNext = () => {
-        advanceSlide(1);
-        resetProgressBar();
+        advanceSlideRef.current(1);
+        resetProgressBarRef.current();
         const elapsed = Date.now() - targetTime;
         const nextDelay = Math.max(0, duration - elapsed);
         targetTime += duration;
@@ -233,7 +239,7 @@ export default function useSlideshowPlayback({
         setBarDuration(staggerDelay);
         staggerTimeoutRef.current = setTimeout(() => {
           staggerAppliedRef.current = true;
-          advanceSlide(1);
+          advanceSlideRef.current(1);
           setBarDuration(duration);
           targetTime = Date.now() + duration;
           timerRef.current = setTimeout(scheduleNext, duration);
@@ -249,7 +255,7 @@ export default function useSlideshowPlayback({
       if (timerRef.current) clearTimeout(timerRef.current);
       if (staggerTimeoutRef.current) clearTimeout(staggerTimeoutRef.current);
     };
-  }, [isSyncMode, syncTrigger, isPlaying, duration, totalTiles, tileId, globalSpeed, advanceSlide, resetProgressBar]);
+  }, [isSyncMode, syncTrigger, isPlaying, duration, totalTiles, tileId, globalSpeed]);
 
   // --- handleCollectionChange ---
 
