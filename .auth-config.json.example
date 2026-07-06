@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "passwordHash": "",
+  "sessionMaxAge": 3600000,
+  "sessions": [],
+  "accessLogs": []
+}

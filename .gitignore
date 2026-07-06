@@ -12,6 +12,10 @@ dist-ssr/
 # Editor/OS files
 .DS_Store
 Thumbs.db
+.vscode/
+
+# Auth config (auto-generated, contains password hash & session tokens)
+.auth-config.json
 
 # User resources (ignore all sub-folders of resources, preserving the resources folder itself)
 resources/
