@@ -117,7 +117,7 @@ export default function DesktopLayout({
       clearTimeout(syncTimerRef.current);
       syncTimerRef.current = null;
     }
-    if (!isSyncMode || !globalIsPlaying) return;
+    if (!isSyncMode || !globalIsPlaying || !isDocumentVisible) return;
 
     let targetTime = Date.now() + globalSpeed;
 
@@ -137,7 +137,7 @@ export default function DesktopLayout({
         syncTimerRef.current = null;
       }
     };
-  }, [isSyncMode, globalSpeed, globalIsPlaying]);
+  }, [isSyncMode, globalSpeed, globalIsPlaying, isDocumentVisible]);
 
   return (
     <div className="app-container">

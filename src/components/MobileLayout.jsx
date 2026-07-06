@@ -182,7 +182,7 @@ export default function MobileLayout({
       clearTimeout(syncTimerRef.current);
       syncTimerRef.current = null;
     }
-    if (!isSyncMode || !globalIsPlaying) return;
+    if (!isSyncMode || !globalIsPlaying || !isDocumentVisible) return;
 
     let targetTime = Date.now() + globalSpeed;
 
@@ -202,7 +202,7 @@ export default function MobileLayout({
         syncTimerRef.current = null;
       }
     };
-  }, [isSyncMode, globalSpeed, globalIsPlaying]);
+  }, [isSyncMode, globalSpeed, globalIsPlaying, isDocumentVisible]);
 
   // Calculate relative overlap intersections for mobile tiles
   const tileIntersections = React.useMemo(() => {
