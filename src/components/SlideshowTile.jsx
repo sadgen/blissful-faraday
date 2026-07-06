@@ -201,6 +201,10 @@ export default function SlideshowTile({
         if (!res.ok) {
           throw new Error(`加载目录失败: ${res.statusText}`);
         }
+        const contentType = res.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          throw new Error('图片服务不可用 (非 JSON 响应)');
+        }
         const data = await res.json();
         if (data.error) {
           throw new Error(data.error);
@@ -718,9 +722,8 @@ export default function SlideshowTile({
     : {};
 
   // Apply 50% opacity when dragging
-  if (isDragging) {
-    dragTransform.opacity = 0.5;
-  }
+  dragTransform.opacity = isDragging ? 0.5 : 1;
+  dragTransform.mixBlendMode = 'lighten';
 
   // Apply overlap mask when not maximized, not dragging, and there are intersections
   const maskStyle = !isMaximized && !isDragging && intersections && intersections.length > 0

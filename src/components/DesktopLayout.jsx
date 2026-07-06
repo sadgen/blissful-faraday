@@ -1,10 +1,11 @@
 import React from 'react';
 import { 
   RefreshCw, FolderOpen, Save, X, Settings, Image, 
-  AlertTriangle, ChevronLeft, ChevronRight, Trash2, Sparkles, History 
+  AlertTriangle, ChevronLeft, ChevronRight, Trash2, Sparkles, History, Shield
 } from 'lucide-react';
 import SlideshowTile from './SlideshowTile';
 import ControlHUD from './ControlHUD';
+import SecurityCenter from './SecurityCenter';
 
 export default function DesktopLayout({
   collections,
@@ -67,10 +68,19 @@ export default function DesktopLayout({
   setShowLanModal,
   lanIp,
   directoryHistory = [],
-  onRemoveHistoryItem
+  onRemoveHistoryItem,
+  // Security props
+  adminConfig,
+  authError,
+  fetchAdminConfig,
+  onUpdateConfig,
+  onRevokeSession,
+  onClearLogs,
+  onLogout
 }) {
   const [isHistoryOpen, setIsHistoryOpen] = React.useState(false);
   const historyRef = React.useRef(null);
+  const [activeTab, setActiveTab] = React.useState('storage');
 
   React.useEffect(() => {
     function handleClickOutside(event) {
@@ -92,6 +102,13 @@ export default function DesktopLayout({
       fetchCacheInfo();
     }
   }, [isSettingsOpen, fetchCacheInfo]);
+
+  // Fetch admin config automatically when switching to security tab
+  React.useEffect(() => {
+    if (activeTab === 'security') {
+      fetchAdminConfig();
+    }
+  }, [activeTab, fetchAdminConfig]);
 
   return (
     <div className="app-container">
@@ -287,202 +304,236 @@ export default function DesktopLayout({
           </button>
         </div>
 
-        <form 
-          onSubmit={(e) => {
-            setIsHistoryOpen(false);
-            handleSaveDirectory(e);
-          }}
-          style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 10 }}
-        >
-          <div>
-            <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 8 }}>
-              指定本地照片文件夹路径:
-            </label>
-            <div ref={historyRef} style={{ display: 'flex', gap: 8, position: 'relative' }}>
-              <input
-                type="text"
-                className="glass-input"
-                value={inputScanDir}
-                onChange={(e) => setInputScanDir(e.target.value)}
-                placeholder="例如: D:/Photos/Vacation"
-                style={{ flex: 1, fontSize: '0.85rem' }}
-                required
-              />
-              {directoryHistory.length > 0 && (
-                <button
-                  type="button"
-                  className={`glass-button ${isHistoryOpen ? 'active' : ''}`}
-                  onClick={() => setIsHistoryOpen(!isHistoryOpen)}
-                  title="历史记录"
-                  style={{ padding: '0 12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                >
-                  <History size={16} />
-                </button>
-              )}
-              
-              {isHistoryOpen && directoryHistory.length > 0 && (
-                <div 
-                  className="glass-panel" 
-                  style={{
-                    position: 'absolute',
-                    top: 'calc(100% + 4px)',
-                    left: 0,
-                    right: 0,
-                    zIndex: 100,
-                    padding: 8,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 6,
-                    boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
-                    border: '1px solid rgba(255,255,255,0.12)'
-                  }}
-                >
-                  <div className="history-title" style={{ padding: '2px 4px 6px 4px', borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: 4 }}>
-                    <History size={12} />
-                    历史扫描目录 (点击选择):
-                  </div>
-                  <div className="history-list" style={{ maxHeight: '140px' }}>
-                    {directoryHistory.map((dir, idx) => (
-                      <div 
-                        key={idx} 
-                        className="history-item"
-                        onClick={() => {
-                          setInputScanDir(dir);
-                          setIsHistoryOpen(false);
-                        }}
-                        style={{ margin: 0, background: 'rgba(255,255,255,0.02)' }}
-                      >
-                        <span className="history-item-text" title={dir}>
-                          {dir}
-                        </span>
-                        <button
-                          type="button"
-                          className="history-item-delete"
-                          title="删除此历史记录"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onRemoveHistoryItem(dir);
-                          }}
-                          style={{ background: 'none', border: 'none', padding: 0 }}
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            
-            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginTop: 6, lineHeight: 1.4 }}>
-              * 默认扫描项目内的 <code>resources/</code> 目录。您可以指定本地电脑上的任何文件夹，系统会自动扫描该目录下包含图片的<strong>一级子目录</strong>，作为不同的播放"图片集"。
-            </span>
-          </div>
-
-          {dirError && (
-            <div style={{ color: '#f87171', fontSize: '0.75rem', padding: '8px 12px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: 6 }}>
-              {dirError}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={isSubmittingDir}
-            className="glass-button active"
-            style={{ width: '100%', justifyContent: 'center', padding: '10px' }}
-          >
-            {isSubmittingDir ? (
-              <>
-                <RefreshCw size={14} className="animate-spin" />
-                <span>正在重载目录...</span>
-              </>
-            ) : (
-              <>
-                <Save size={14} />
-                <span>确认并重新扫描</span>
-              </>
-            )}
-          </button>
-        </form>
-
-        {/* Layout Info */}
-        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 16 }}>
-          <h4 style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Image size={16} />
-            当前布局
-          </h4>
-          
-          <div style={{  
-            background: 'rgba(139, 92, 246, 0.1)', 
-            border: '1px solid rgba(139, 92, 246, 0.2)',
-            borderRadius: 6, 
-            padding: 10,
-            fontSize: '0.75rem',
-            color: 'var(--text-secondary)',
-            lineHeight: 1.6
-          }}>
-            <div style={{ marginBottom: 6 }}>
-              <strong>分屏模式:</strong> {tileCount} 窗口 ({gridConfig.cols}×{gridConfig.rows})
-            </div>
-            <div style={{ color: 'var(--text-muted)' }}>
-              💡 使用底部缩放条调整窗口大小
-            </div>
-          </div>
-        </div>
-
-        {/* Transition Animation Effect */}
-        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 16 }}>
-          <h4 style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Sparkles size={16} />
-            过渡动画
-          </h4>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {[
-              { id: 'ken-burns', label: '温和缩放' },
-              { id: 'fade', label: '平滑渐变' },
-              { id: 'slide', label: '滑入' },
-              { id: 'none', label: '关闭动画' }
-            ].map(effect => (
-              <button
-                key={effect.id}
-                onClick={() => setGlobalTransitionEffect(effect.id)}
-                style={{
-                  background: globalTransitionEffect === effect.id ? 'var(--accent-purple)' : 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  color: '#fff',
-                  fontSize: '0.7rem',
-                  padding: '4px 10px',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  fontWeight: globalTransitionEffect === effect.id ? '600' : 'normal',
-                  transition: 'var(--transition-smooth)'
-                }}
-              >
-                {effect.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-
-        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 'auto' }}>
-          <h4 style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>快捷扫描预设:</h4>
+        {/* Settings tabs */}
+        <div className="settings-tabs" style={{ marginTop: 14 }}>
           <button
             type="button"
-            onClick={() => {
-              setInputScanDir('');
-              fetch('/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ scanDirectory: 'RESET_TO_DEFAULT' })
-              }).then(() => fetchCollections());
-            }}
-            className="glass-button"
-            style={{ width: '100%', justifyContent: 'center', fontSize: '0.75rem', background: 'rgba(255, 255, 255, 0.03)' }}
+            className={`settings-tab-btn ${activeTab === 'storage' ? 'active' : ''}`}
+            onClick={() => setActiveTab('storage')}
           >
-            重置为项目内置 resources/
+            <FolderOpen size={14} />
+            存储设置
+          </button>
+          <button
+            type="button"
+            className={`settings-tab-btn ${activeTab === 'security' ? 'active' : ''}`}
+            onClick={() => setActiveTab('security')}
+          >
+            <Shield size={14} />
+            安全中心
           </button>
         </div>
+
+        {activeTab === 'storage' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, overflowY: 'auto', paddingRight: 4, marginTop: 10 }}>
+            <form 
+              onSubmit={(e) => {
+                setIsHistoryOpen(false);
+                handleSaveDirectory(e);
+              }}
+              style={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+            >
+              <div>
+                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 8 }}>
+                  指定本地照片文件夹路径:
+                </label>
+                <div ref={historyRef} style={{ display: 'flex', gap: 8, position: 'relative' }}>
+                  <input
+                    type="text"
+                    className="glass-input"
+                    value={inputScanDir}
+                    onChange={(e) => setInputScanDir(e.target.value)}
+                    placeholder="例如: D:/Photos/Vacation"
+                    style={{ flex: 1, fontSize: '0.85rem' }}
+                    required
+                  />
+                  {directoryHistory.length > 0 && (
+                    <button
+                      type="button"
+                      className={`glass-button ${isHistoryOpen ? 'active' : ''}`}
+                      onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+                      title="历史记录"
+                      style={{ padding: '0 12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      <History size={16} />
+                    </button>
+                  )}
+                  
+                  {isHistoryOpen && directoryHistory.length > 0 && (
+                    <div 
+                      className="glass-panel" 
+                      style={{
+                        position: 'absolute',
+                        top: 'calc(100% + 4px)',
+                        left: 0,
+                        right: 0,
+                        zIndex: 100,
+                        padding: 8,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                        boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
+                        border: '1px solid rgba(255,255,255,0.12)'
+                      }}
+                    >
+                      <div className="history-title" style={{ padding: '2px 4px 6px 4px', borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: 4 }}>
+                        <History size={12} />
+                        历史扫描目录 (点击选择):
+                      </div>
+                      <div className="history-list" style={{ maxHeight: '140px' }}>
+                        {directoryHistory.map((dir, idx) => (
+                          <div 
+                            key={idx} 
+                            className="history-item"
+                            onClick={() => {
+                              setInputScanDir(dir);
+                              setIsHistoryOpen(false);
+                            }}
+                            style={{ margin: 0, background: 'rgba(255,255,255,0.02)' }}
+                          >
+                            <span className="history-item-text" title={dir}>
+                              {dir}
+                            </span>
+                            <button
+                              type="button"
+                              className="history-item-delete"
+                              title="删除此历史记录"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onRemoveHistoryItem(dir);
+                              }}
+                              style={{ background: 'none', border: 'none', padding: 0 }}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginTop: 6, lineHeight: 1.4 }}>
+                  * 默认扫描项目内的 <code>resources/</code> 目录。您可以指定本地电脑上的任何文件夹，系统会自动扫描该目录下包含图片的<strong>一级子目录</strong>，作为不同的播放"图片集"。
+                </span>
+              </div>
+
+              {dirError && (
+                <div style={{ color: '#f87171', fontSize: '0.75rem', padding: '8px 12px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: 6 }}>
+                  {dirError}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={isSubmittingDir}
+                className="glass-button active"
+                style={{ width: '100%', justifyContent: 'center', padding: '10px' }}
+              >
+                {isSubmittingDir ? (
+                  <>
+                    <RefreshCw size={14} className="animate-spin" />
+                    <span>正在重载目录...</span>
+                  </>
+                ) : (
+                  <>
+                    <Save size={14} />
+                    <span>确认并重新扫描</span>
+                  </>
+                )}
+              </button>
+            </form>
+
+            {/* Layout Info */}
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 16 }}>
+              <h4 style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Image size={16} />
+                当前布局
+              </h4>
+              
+              <div style={{  
+                background: 'rgba(139, 92, 246, 0.1)', 
+                border: '1px solid rgba(139, 92, 246, 0.2)',
+                borderRadius: 6, 
+                padding: 10,
+                fontSize: '0.75rem',
+                color: 'var(--text-secondary)',
+                lineHeight: 1.6
+              }}>
+                <div style={{ marginBottom: 6 }}>
+                  <strong>分屏模式:</strong> {tileCount} 窗口 ({gridConfig.cols}×{gridConfig.rows})
+                </div>
+                <div style={{ color: 'var(--text-muted)' }}>
+                  💡 使用底部缩放条调整窗口大小
+                </div>
+              </div>
+            </div>
+
+            {/* Transition Animation Effect */}
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 16 }}>
+              <h4 style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Sparkles size={16} />
+                过渡动画
+              </h4>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {[
+                  { id: 'ken-burns', label: '温和缩放' },
+                  { id: 'fade', label: '平滑渐变' },
+                  { id: 'slide', label: '滑入' },
+                  { id: 'none', label: '关闭动画' }
+                ].map(effect => (
+                  <button
+                    key={effect.id}
+                    onClick={() => setGlobalTransitionEffect(effect.id)}
+                    style={{
+                      background: globalTransitionEffect === effect.id ? 'var(--accent-purple)' : 'rgba(255,255,255,0.05)',
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      color: '#fff',
+                      fontSize: '0.7rem',
+                      padding: '4px 10px',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontWeight: globalTransitionEffect === effect.id ? '600' : 'normal',
+                      transition: 'var(--transition-smooth)'
+                    }}
+                  >
+                    {effect.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 'auto' }}>
+              <h4 style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>快捷扫描预设:</h4>
+              <button
+                type="button"
+                onClick={() => {
+                  setInputScanDir('');
+                  fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ scanDirectory: 'RESET_TO_DEFAULT' })
+                  }).then(() => fetchCollections());
+                }}
+                className="glass-button"
+                style={{ width: '100%', justifyContent: 'center', fontSize: '0.75rem', background: 'rgba(255, 255, 255, 0.03)' }}
+              >
+                重置为项目内置 resources/
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ flex: 1, overflowY: 'auto', paddingRight: 4, marginTop: 10 }}>
+            <SecurityCenter
+              adminConfig={adminConfig}
+              authError={authError}
+              onUpdateConfig={onUpdateConfig}
+              onRevokeSession={onRevokeSession}
+              onClearLogs={onClearLogs}
+              onLogout={onLogout}
+            />
+          </div>
+        )}
       </div>
 
       {/* LAN Connect QR Modal */}

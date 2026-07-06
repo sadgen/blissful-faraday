@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -164,10 +165,327 @@ function getMimeType(filePath) {
   }
 }
 
+// Security configuration file path in root directory
+const authConfigPath = path.join(__dirname, '.auth-config.json');
+
+// High-Performance Security Config helper functions
+function loadAuthConfig() {
+  try {
+    if (fs.existsSync(authConfigPath)) {
+      const data = JSON.parse(fs.readFileSync(authConfigPath, 'utf8'));
+      if (!data.sessions) data.sessions = [];
+      if (!data.accessLogs) data.accessLogs = [];
+      if (data.enabled === undefined) data.enabled = false;
+      if (data.sessionMaxAge === undefined) data.sessionMaxAge = 86400000;
+      return data;
+    }
+  } catch (err) {
+    console.warn('[Auth] Failed to load auth config:', err.message);
+  }
+  return {
+    enabled: false,
+    passwordHash: '',
+    sessionMaxAge: 86400000, // 24 hours default
+    sessions: [],
+    accessLogs: []
+  };
+}
+
+function saveAuthConfig(config) {
+  try {
+    // Garbage collection for expired sessions
+    const now = Date.now();
+    config.sessions = config.sessions.filter(s => s.expiresAt > now);
+    
+    // Cap security events logs to recent 50 entries
+    if (config.accessLogs.length > 50) {
+      config.accessLogs = config.accessLogs.slice(0, 50);
+    }
+    
+    fs.writeFileSync(authConfigPath, JSON.stringify(config, null, 2), 'utf8');
+    return true;
+  } catch (err) {
+    console.warn('[Auth] Failed to save auth config:', err.message);
+    return false;
+  }
+}
+
+function hashPassword(password) {
+  return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+function logEvent(config, event, ip, details = '') {
+  config.accessLogs.unshift({
+    timestamp: Date.now(),
+    event,
+    ip,
+    details
+  });
+  saveAuthConfig(config);
+}
+
+function parseCookies(cookieHeader) {
+  const list = {};
+  if (!cookieHeader) return list;
+  cookieHeader.split(';').forEach(cookie => {
+    const parts = cookie.split('=');
+    list[parts.shift().trim()] = decodeURI(parts.join('='));
+  });
+  return list;
+}
+
+function getSession(req, config) {
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies['bf_session'];
+  if (!token) return null;
+  
+  const now = Date.now();
+  const session = config.sessions.find(s => s.token === token && s.expiresAt > now);
+  if (!session) return null;
+  
+  return session;
+}
+
+function requireAuth(req, res, config) {
+  if (!config.enabled) return true;
+  const session = getSession(req, config);
+  if (session) return true;
+  
+  res.writeHead(401, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'UNAUTHORIZED' }));
+  return false;
+}
+
 // Custom API Plugin for local image collections scanning and safe retrieval
 function imageScannerApiPlugin() {
   const middleware = (req, res, next) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    
+    // Load auth configuration
+    const authConfig = loadAuthConfig();
+    
+    // 1. Global Interceptor for secured /api/... endpoints (excluding public auth endpoints)
+    if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/auth/')) {
+      if (authConfig.enabled && !getSession(req, authConfig)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'UNAUTHORIZED' }));
+        return;
+      }
+    }
+
+    // 2. Authentication API endpoints
+    // GET /api/auth/status
+    if (url.pathname === '/api/auth/status') {
+      const session = getSession(req, authConfig);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        enabled: authConfig.enabled,
+        authenticated: session !== null
+      }));
+      return;
+    }
+
+    // POST /api/auth/login
+    if (url.pathname === '/api/auth/login' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => body += chunk.toString());
+      req.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+          const userAgent = req.headers['user-agent'] || 'Unknown';
+          
+          if (!authConfig.enabled) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, message: 'Password protection is disabled.' }));
+            return;
+          }
+          
+          const submittedHash = hashPassword(data.password || '');
+          if (submittedHash === authConfig.passwordHash) {
+            const token = crypto.randomBytes(32).toString('hex');
+            const expiresAt = Date.now() + authConfig.sessionMaxAge;
+            
+            authConfig.sessions.push({
+              token,
+              ip,
+              userAgent,
+              expiresAt,
+              loginTime: Date.now()
+            });
+            
+            logEvent(authConfig, '登录成功', ip, userAgent);
+            
+            const maxAgeSec = Math.floor(authConfig.sessionMaxAge / 1000);
+            res.writeHead(200, {
+              'Set-Cookie': `bf_session=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${maxAgeSec}`,
+              'Content-Type': 'application/json'
+            });
+            res.end(JSON.stringify({ success: true }));
+          } else {
+            logEvent(authConfig, '登录失败 (密码错误)', ip, userAgent);
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '密码错误' }));
+          }
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // POST /api/auth/logout
+    if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
+      const session = getSession(req, authConfig);
+      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+      
+      if (session) {
+        authConfig.sessions = authConfig.sessions.filter(s => s.token !== session.token);
+        logEvent(authConfig, '用户登出', ip, session.userAgent);
+      }
+      
+      res.writeHead(200, {
+        'Set-Cookie': `bf_session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+        'Content-Type': 'application/json'
+      });
+      res.end(JSON.stringify({ success: true }));
+      return;
+    }
+
+    // GET /api/auth/admin/config
+    if (url.pathname === '/api/auth/admin/config') {
+      try {
+        if (!requireAuth(req, res, authConfig)) return;
+        
+        const currentSession = getSession(req, authConfig);
+        const safeSessions = (authConfig.sessions || []).map(s => ({
+          ip: s.ip,
+          userAgent: s.userAgent,
+          loginTime: s.loginTime,
+          isCurrent: currentSession && s.token === currentSession.token,
+          id: crypto.createHash('md5').update(s.token || '').digest('hex')
+        }));
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          enabled: authConfig.enabled,
+          sessionMaxAge: authConfig.sessionMaxAge,
+          sessions: safeSessions,
+          accessLogs: authConfig.accessLogs || [],
+          hasPassword: !!authConfig.passwordHash
+        }));
+      } catch (err) {
+        console.error('[Auth API Config Error]', err);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // POST /api/auth/admin/update
+    if (url.pathname === '/api/auth/admin/update' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => body += chunk.toString());
+      req.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+          
+          if (authConfig.enabled && !requireAuth(req, res, authConfig)) return;
+          
+          if (data.newPassword) {
+            if (authConfig.enabled && authConfig.passwordHash) {
+              const oldHash = hashPassword(data.oldPassword || '');
+              if (oldHash !== authConfig.passwordHash) {
+                res.writeHead(403, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: '旧密码输入错误' }));
+                return;
+              }
+            }
+            
+            authConfig.passwordHash = hashPassword(data.newPassword);
+            const currentSession = getSession(req, authConfig);
+            if (currentSession) {
+              authConfig.sessions = authConfig.sessions.filter(s => s.token === currentSession.token);
+            } else {
+              authConfig.sessions = [];
+            }
+            logEvent(authConfig, '修改了管理员密码', ip);
+          }
+          
+          if (data.enabled !== undefined) {
+            if (data.enabled && !authConfig.passwordHash && !data.newPassword) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: '开启验证前必须先设置密码' }));
+              return;
+            }
+            
+            authConfig.enabled = !!data.enabled;
+            logEvent(authConfig, authConfig.enabled ? '启用了密码访问保护' : '禁用了密码访问保护', ip);
+          }
+          
+          if (data.sessionMaxAge !== undefined && typeof data.sessionMaxAge === 'number') {
+            authConfig.sessionMaxAge = data.sessionMaxAge;
+            logEvent(authConfig, `修改会话保持时长为 ${Math.round(data.sessionMaxAge / 3600000)} 小时`, ip);
+          }
+          
+          saveAuthConfig(authConfig);
+          
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true }));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // POST /api/auth/admin/revoke-session
+    if (url.pathname === '/api/auth/admin/revoke-session' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => body += chunk.toString());
+      req.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          if (!requireAuth(req, res, authConfig)) return;
+          
+          const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+          const sessionId = data.id;
+          
+          const sessionToRevoke = authConfig.sessions.find(s => crypto.createHash('md5').update(s.token).digest('hex') === sessionId);
+          
+          if (sessionToRevoke) {
+            authConfig.sessions = authConfig.sessions.filter(s => s.token !== sessionToRevoke.token);
+            logEvent(authConfig, `强制踢除了一个客户端设备`, ip, `设备IP: ${sessionToRevoke.ip}`);
+            saveAuthConfig(authConfig);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true }));
+          } else {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '未找到该在线设备' }));
+          }
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // POST /api/auth/admin/clear-logs
+    if (url.pathname === '/api/auth/admin/clear-logs' && req.method === 'POST') {
+      if (!requireAuth(req, res, authConfig)) return;
+      
+      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+      authConfig.accessLogs = [];
+      logEvent(authConfig, '清空了审计日志', ip);
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+      return;
+    }
     
     // 0. GET /api/lan-ip
     // Returns the server's local LAN IP address
@@ -556,11 +874,13 @@ export default defineConfig({
   server: {
     host: '0.0.0.0', // Allow LAN access in dev mode
     port: 3000,
-    open: true
+    open: true,
+    allowedHosts: true // Allow custom domain names when reverse proxied
   },
   preview: {
     host: '0.0.0.0', // Allow LAN access in preview/production mode
     port: 3000,
-    open: true
+    open: true,
+    allowedHosts: true // Allow custom domain names when reverse proxied
   }
 });

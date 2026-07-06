@@ -831,3 +831,35 @@
   pointer-events: none;
   transition: opacity 0.2s ease;
 }
+
+/* Mobile-specific adjustments for security tab & login overlay */
+@media (max-width: 767px) {
+  .login-overlay {
+    backdrop-filter: blur(15px) saturate(140%);
+    -webkit-backdrop-filter: blur(15px) saturate(140%);
+  }
+  .login-card {
+    padding: 24px;
+    margin: 16px;
+    gap: 16px;
+    border-radius: 16px;
+  }
+  .login-title {
+    font-size: 1.15rem;
+  }
+  .login-input {
+    padding: 10px 36px 10px 34px;
+    font-size: 0.85rem;
+  }
+  .terminal-box {
+    height: 120px;
+  }
+  .ios-switch-container {
+    padding: 10px 12px;
+    border-radius: 10px;
+  }
+  .security-card {
+    padding: 10px 12px;
+    border-radius: 10px;
+  }
+}

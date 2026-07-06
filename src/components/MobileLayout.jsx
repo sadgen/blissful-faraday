@@ -4,6 +4,96 @@ import MobileSlideshowCard from './MobileSlideshowCard';
 import MobileControlSheet from './MobileControlSheet';
 import '../mobile.css';
 
+// Calculate mobile tile coordinates in viewport percentage space
+function getMobileTileCoords(tileId, totalTiles, zoomScale) {
+  let cols = 2;
+  let rows = 1;
+  let col = 0;
+  let row = 0;
+
+  if (totalTiles === 1) {
+    cols = 1;
+    rows = 1;
+    col = 0;
+    row = 0;
+  } else if (totalTiles === 2) {
+    cols = 1;
+    rows = 2;
+    col = 0;
+    row = tileId;
+  } else if (totalTiles === 3) {
+    cols = 1;
+    rows = 3;
+    col = 0;
+    row = tileId;
+  } else if (totalTiles === 4) {
+    cols = 2;
+    rows = 2;
+    col = tileId % 2;
+    row = Math.floor(tileId / 2);
+  } else if (totalTiles === 5) {
+    rows = 3;
+    if (tileId < 4) {
+      cols = 2;
+      col = tileId % 2;
+      row = Math.floor(tileId / 2);
+    } else {
+      cols = 1;
+      col = 0;
+      row = 2;
+    }
+  } else if (totalTiles === 6) {
+    cols = 2;
+    rows = 3;
+    col = tileId % 2;
+    row = Math.floor(tileId / 2);
+  } else if (totalTiles === 12) {
+    cols = 2;
+    rows = 6;
+    col = tileId % 2;
+    row = Math.floor(tileId / 2);
+  } else {
+    cols = totalTiles === 2 ? 1 : 2;
+    col = tileId % cols;
+    row = Math.floor(tileId / cols);
+    rows = Math.ceil(totalTiles / cols);
+  }
+
+  const W_slot = 100 / cols;
+  const H_slot = 100 / rows;
+
+  const left_base = col * W_slot;
+  const top_base = row * H_slot;
+
+  const W_scaled = W_slot * zoomScale;
+  const H_scaled = H_slot * zoomScale;
+
+  const shiftPercent = Math.abs(zoomScale - 1) * 50;
+
+  const translateX = cols > 1 
+    ? ((cols - 1 - 2 * col) / (cols - 1)) * shiftPercent 
+    : 0;
+
+  const translateY = rows > 1 
+    ? ((rows - 1 - 2 * row) / (rows - 1)) * shiftPercent 
+    : 0;
+
+  const shift_X = (translateX / 100) * W_slot;
+  const shift_Y = (translateY / 100) * H_slot;
+
+  const left = left_base + (W_slot - W_scaled) / 2 + shift_X;
+  const top = top_base + (H_slot - H_scaled) / 2 + shift_Y;
+
+  return {
+    left,
+    top,
+    width: W_scaled,
+    height: H_scaled,
+    right: left + W_scaled,
+    bottom: top + H_scaled
+  };
+}
+
 export default function MobileLayout({
   collections,
   displayedCollections,
@@ -20,6 +110,8 @@ export default function MobileLayout({
   fetchError,
   scanDirectory,
   fetchCollections,
+  isSettingsOpen,
+  setIsSettingsOpen,
   tileCount,
   setTileCount,
   isAutoTiling,
@@ -52,9 +144,16 @@ export default function MobileLayout({
   totalPages,
   pageSize,
   directoryHistory = [],
-  onRemoveHistoryItem
+  onRemoveHistoryItem,
+  // Security props
+  adminConfig,
+  authError,
+  fetchAdminConfig,
+  onUpdateConfig,
+  onRevokeSession,
+  onClearLogs,
+  onLogout
 }) {
-  const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [showZoomSlider, setShowZoomSlider] = useState(false);
   const sliderTimeoutRef = useRef(null);
 
@@ -75,6 +174,54 @@ export default function MobileLayout({
       }
     };
   }, []);
+
+  // Calculate relative overlap intersections for mobile tiles
+  const tileIntersections = React.useMemo(() => {
+    const intersections = {};
+    for (let i = 0; i < activeTileCount; i++) {
+      intersections[i] = [];
+    }
+
+    const coords = [];
+    for (let i = 0; i < activeTileCount; i++) {
+      coords.push(getMobileTileCoords(i, activeTileCount, zoomScale));
+    }
+
+    for (let i = 0; i < activeTileCount; i++) {
+      for (let j = 0; j < i; j++) { // Only look at tiles underneath (index j < i)
+        const r1 = coords[j];
+        const r2 = coords[i];
+
+        // Check if they intersect
+        const intersect = !(r2.left >= r1.right ||
+                            r2.right <= r1.left ||
+                            r2.top >= r1.bottom ||
+                            r2.bottom <= r1.top);
+        if (intersect) {
+          // Calculate intersection bounds in percentage
+          const left = Math.max(r1.left, r2.left);
+          const top = Math.max(r1.top, r2.top);
+          const right = Math.min(r1.right, r2.right);
+          const bottom = Math.min(r1.bottom, r2.bottom);
+
+          const width = right - left;
+          const height = bottom - top;
+
+          if (width > 0 && height > 0) {
+            // Convert to relative coordinates of tile i (which is on top)
+            // relative to the tile's own width and height as fractions (0 to 1)
+            intersections[i].push({
+              x: (left - r2.left) / r2.width,
+              y: (top - r2.top) / r2.height,
+              w: width / r2.width,
+              h: height / r2.height
+            });
+          }
+        }
+      }
+    }
+    return intersections;
+  }, [activeTileCount, zoomScale]);
 
   // Filter collections to display based on active tile count
   const renderCollections = displayedCollections.slice(0, activeTileCount);
@@ -99,6 +246,34 @@ export default function MobileLayout({
     <div className="mobile-layout">
       {/* 1. Main Slideshow Viewport Area */}
       <main className="mobile-viewport">
+        {/* Dynamic SVG Mask Definitions for Overlapping Mobile Windows */}
+        {collections.length > 0 && (
+          <svg width="0" height="0" style={{ position: 'absolute', pointerEvents: 'none' }}>
+            <defs>
+              {Array.from({ length: activeTileCount }).map((_, index) => {
+                const intersections = tileIntersections[index] || [];
+                return (
+                  <mask id={`mobile-tile-mask-${index}`} key={index} maskContentUnits="objectBoundingBox" mask-type="luminance">
+                    {/* Entire tile is white by default (100% opaque) */}
+                    <rect x="0" y="0" width="1" height="1" fill="white" />
+                    {/* Overlapping parts are grey #7f7f7f (exactly 50% opaque) */}
+                    {intersections.map((rect, rIdx) => (
+                      <rect
+                        key={rIdx}
+                        x={rect.x}
+                        y={rect.y}
+                        width={rect.w}
+                        height={rect.h}
+                        fill="#7f7f7f"
+                      />
+                    ))}
+                  </mask>
+                );
+              })}
+            </defs>
+          </svg>
+        )}
+
         {collections.length > 0 ? (
           <div 
             style={{
@@ -135,6 +310,7 @@ export default function MobileLayout({
                   onAspectRatioChange={handleAspectRatioChange}
                   sortMethod={sortMethod}
                   zoomScale={zoomScale}
+                  intersections={tileIntersections[index] || []}
                   onTitleClick={(folderName) => {
                     setIsAutoTiling(false);
                     setTileCount(1);
@@ -158,7 +334,7 @@ export default function MobileLayout({
             <p style={{ fontSize: '0.85rem', marginBottom: 12 }}>未在扫描目录中检测到任何图片集</p>
             <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>目录路径: {scanDirectory}</p>
             <button 
-              onClick={() => setIsSheetOpen(true)}
+              onClick={() => setIsSettingsOpen(true)}
               className="mobile-action-btn primary"
               style={{ marginTop: 20, minWidth: 120 }}
             >
@@ -175,7 +351,7 @@ export default function MobileLayout({
           <button 
             type="button"
             className="mobile-pill-btn"
-            onClick={() => setIsSheetOpen(true)}
+            onClick={() => setIsSettingsOpen(true)}
           >
             <Settings size={18} />
           </button>
@@ -222,8 +398,8 @@ export default function MobileLayout({
 
       {/* 4. Glassmorphic Slide-Up Settings Drawer */}
       <MobileControlSheet
-        isOpen={isSheetOpen}
-        onClose={() => setIsSheetOpen(false)}
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
         collections={collections}
         tileCount={tileCount}
         setTileCount={setTileCount}
@@ -252,6 +428,13 @@ export default function MobileLayout({
         isClearingCache={isClearingCache}
         directoryHistory={directoryHistory}
         onRemoveHistoryItem={onRemoveHistoryItem}
+        adminConfig={adminConfig}
+        authError={authError}
+        fetchAdminConfig={fetchAdminConfig}
+        onUpdateConfig={onUpdateConfig}
+        onRevokeSession={onRevokeSession}
+        onClearLogs={onClearLogs}
+        onLogout={onLogout}
       />
 
       {/* 5. Floating Vertical Zoom Slider on Right Screen Edge */}

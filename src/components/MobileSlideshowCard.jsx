@@ -16,7 +16,8 @@ export default function MobileSlideshowCard({
   totalTiles,
   sortMethod,
   zoomScale = 1,
-  onTitleClick = null
+  onTitleClick = null,
+  intersections = []
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [images, setImages] = useState([]);
@@ -682,6 +683,13 @@ export default function MobileSlideshowCard({
   const activeImgName = images[activeIdx];
   const progressPercent = isPlaying ? 100 : 0;
 
+  const maskStyle = intersections && intersections.length > 0
+    ? {
+        maskImage: `url(#mobile-tile-mask-${tileId})`,
+        WebkitMaskImage: `url(#mobile-tile-mask-${tileId})`
+      }
+    : {};
+
   return (
     <>
       <div 
@@ -697,7 +705,8 @@ export default function MobileSlideshowCard({
           zIndex: showOverlay ? 10 : 1,
           width: '100%',
           height: '100%',
-          transition: isSwiping ? 'none' : 'transform 0.3s cubic-bezier(0.16, 1, 0.3, 1)'
+          transition: isSwiping ? 'none' : 'transform 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+          ...maskStyle
         }}
       >
         {/* Swipe instruction overlay for user education */}

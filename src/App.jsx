@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import DesktopLayout from './components/DesktopLayout';
 import MobileLayout from './components/MobileLayout';
 import { RefreshCw } from 'lucide-react';
+import LoginOverlay from './components/LoginOverlay';
 
 // Preset grid configurations for each tile count
 const GRID_PRESETS = {
@@ -24,6 +25,25 @@ const ZOOM_STEP = 0.05;
 
 // HUD bar height (for bottom bar)
 const HUD_HEIGHT = 50;
+
+// High-Performance Safe JSON Fetcher (with friendly fallback for static hosting modes)
+const safeFetchJSON = async (url, options = {}) => {
+  const res = await fetch(url, options);
+  const contentType = res.headers.get('content-type');
+  if (!contentType || !contentType.includes('application/json')) {
+    const err = new Error(`非 JSON 格式响应 (收到 ${contentType || '空'})`);
+    err.isStaticFallback = true;
+    err.status = res.status;
+    throw err;
+  }
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    const err = new Error(errData.error || `HTTP 错误 ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+};
 
 export default function App() {
   // Load saved configuration from localStorage
@@ -142,6 +162,122 @@ export default function App() {
   const [lanIp, setLanIp] = useState('');
   const [showLanModal, setShowLanModal] = useState(false);
 
+  // Authentication & Security state
+  const [adminConfig, setAdminConfig] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(true);
+  const [authStatusChecked, setAuthStatusChecked] = useState(false);
+  const [authError, setAuthError] = useState('');
+
+  const checkAuthStatus = useCallback(async () => {
+    try {
+      const data = await safeFetchJSON('/api/auth/status');
+      setIsAuthenticated(!data.enabled || data.authenticated);
+    } catch (err) {
+      if (err.isStaticFallback) {
+        console.info('Backend security service is unavailable (static hosting mode). Defaulting to unauthenticated access.');
+        setIsAuthenticated(true);
+      } else {
+        console.warn('Failed to check auth status:', err.message || err);
+      }
+    } finally {
+      setAuthStatusChecked(true);
+    }
+  }, []);
+
+  const fetchAdminConfig = useCallback(async () => {
+    try {
+      setAuthError('');
+      const data = await safeFetchJSON('/api/auth/admin/config');
+      setAdminConfig(data);
+    } catch (err) {
+      if (err.isStaticFallback) {
+        console.info('Admin security config is unavailable in static hosting mode.');
+        setAuthError('STATIC_FALLBACK');
+      } else {
+        console.warn('Failed to fetch admin security config:', err.message || err);
+        setAuthError(err.message || '连接安全服务出错');
+      }
+    }
+  }, []);
+
+  // Fetch admin config automatically on settings open
+  useEffect(() => {
+    if (isSettingsOpen && isAuthenticated) {
+      fetchAdminConfig();
+    }
+  }, [isSettingsOpen, isAuthenticated, fetchAdminConfig]);
+
+  // Initial check
+  useEffect(() => {
+    checkAuthStatus();
+  }, [checkAuthStatus]);
+
+  // Security Operations Mutators
+  const handleUpdateAdminConfig = async (updates) => {
+    try {
+      const res = await fetch('/api/auth/admin/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || '更新安全设置失败');
+      }
+      // Reload states
+      await checkAuthStatus();
+      await fetchAdminConfig();
+      return true;
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
+  };
+
+  const handleRevokeSession = async (id) => {
+    try {
+      const res = await fetch('/api/auth/admin/revoke-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      });
+      if (!res.ok) {
+        throw new Error('无法注销在线设备');
+      }
+      await fetchAdminConfig();
+    } catch (err) {
+      console.warn('Failed to revoke session:', err);
+    }
+  };
+
+  const handleClearLogs = async () => {
+    try {
+      const res = await fetch('/api/auth/admin/clear-logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) {
+        throw new Error('无法清空日志');
+      }
+      await fetchAdminConfig();
+    } catch (err) {
+      console.warn('Failed to clear logs:', err);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      setIsAuthenticated(false);
+      await checkAuthStatus();
+    } catch (err) {
+      console.warn('Logout request failed:', err);
+    }
+  };
+
   
   // Tile positioning state
   const [tilePositions, setTilePositions] = useState({});
@@ -225,14 +361,7 @@ export default function App() {
         setIsLoading(true);
       }
       setFetchError('');
-      const res = await fetch('/api/collections');
-      if (!res.ok) {
-        throw new Error(`API error: ${res.statusText}`);
-      }
-      const data = await res.json();
-      if (data.error) {
-        throw new Error(data.error);
-      }
+      const data = await safeFetchJSON('/api/collections');
       
       const nextCollections = data.collections || [];
       const nextScanDirectory = data.scanDirectory || '';
@@ -251,8 +380,12 @@ export default function App() {
         console.warn('Failed to cache collections in localStorage:', err);
       }
     } catch (err) {
-      console.error(err);
-      setFetchError(err.message);
+      if (err.isStaticFallback) {
+        console.info('Backend scanner is unavailable. Using cached local collections (static hosting/offline mode).');
+      } else {
+        console.error('Failed to fetch collections:', err.message || err);
+        setFetchError(err.message);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -285,12 +418,17 @@ export default function App() {
   }, [isMobile, tileCount]);
 
   useEffect(() => {
-    fetch('/api/lan-ip')
-      .then(res => res.json())
+    safeFetchJSON('/api/lan-ip')
       .then(data => {
         if (data.ip) setLanIp(data.ip);
       })
-      .catch(err => console.warn('Failed to fetch LAN IP:', err));
+      .catch(err => {
+        if (err.isStaticFallback) {
+          console.info('LAN sync module is offline (running in static mode).');
+        } else {
+          console.warn('Failed to fetch LAN IP:', err.message || err);
+        }
+      });
   }, []);
 
   // Save configuration to localStorage
@@ -735,6 +873,37 @@ export default function App() {
     return intersections;
   }, [realTilePositions]);
 
+  // 0. Security Verification Blocks
+  if (!authStatusChecked) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100vh',
+        width: '100vw',
+        background: '#06080d',
+        gap: 16
+      }}>
+        <RefreshCw size={32} className="animate-spin text-purple-400" style={{ animation: 'spin 2s linear infinite' }} />
+        <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>
+          正在校验安全状态...
+        </span>
+        <style dangerouslySetInnerHTML={{__html: `
+          @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+        `}} />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginOverlay onLoginSuccess={() => { setIsAuthenticated(true); checkAuthStatus(); }} />;
+  }
+
   // Render loading screen
   if (isLoading && collections.length === 0) {
     return (
@@ -815,6 +984,13 @@ export default function App() {
         pageSize={pageSize}
         directoryHistory={directoryHistory}
         onRemoveHistoryItem={handleRemoveHistoryItem}
+        adminConfig={adminConfig}
+        authError={authError}
+        fetchAdminConfig={fetchAdminConfig}
+        onUpdateConfig={handleUpdateAdminConfig}
+        onRevokeSession={handleRevokeSession}
+        onClearLogs={handleClearLogs}
+        onLogout={handleLogout}
       />
     );
   }
@@ -881,6 +1057,13 @@ export default function App() {
       lanIp={lanIp}
       directoryHistory={directoryHistory}
       onRemoveHistoryItem={handleRemoveHistoryItem}
+      adminConfig={adminConfig}
+      authError={authError}
+      fetchAdminConfig={fetchAdminConfig}
+      onUpdateConfig={handleUpdateAdminConfig}
+      onRevokeSession={handleRevokeSession}
+      onClearLogs={handleClearLogs}
+      onLogout={handleLogout}
     />
   );
 }
