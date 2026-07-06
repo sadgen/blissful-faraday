@@ -175,26 +175,21 @@ export default function ControlHUD({
             </button>
           </div>
 
-          {/* Speed control */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 3, opacity: globalIsPlaying ? 1 : 0.4 }}>
-            {[2, 3, 5, 10].map(sec => (
-              <button
-                key={sec}
-                onClick={() => setGlobalSpeed(sec * 1000)}
-                style={{
-                  background: speedInSeconds === sec ? 'var(--accent-blue)' : 'rgba(255,255,255,0.05)',
-                  border: speedInSeconds === sec ? '1px solid var(--accent-blue)' : '1px solid rgba(255,255,255,0.08)',
-                  color: '#fff',
-                  fontSize: '0.6rem',
-                  padding: '3px 8px',
-                  borderRadius: '5px',
-                  cursor: 'pointer',
-                  fontWeight: speedInSeconds === sec ? 'bold' : 'normal'
-                }}
-              >
-                {sec}s
-              </button>
-            ))}
+          {/* Speed control - slider */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, opacity: globalIsPlaying ? 1 : 0.4 }}>
+            <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', minWidth: '38px', textAlign: 'right' }}>
+              {speedInSeconds.toFixed(1)}秒
+            </span>
+            <input
+              type="range"
+              min="1"
+              max="30"
+              step="0.5"
+              value={speedInSeconds}
+              onChange={(e) => setGlobalSpeed(parseFloat(e.target.value) * 1000)}
+              className="glass-slider"
+              style={{ width: '80px', height: '4px', cursor: 'pointer' }}
+            />
           </div>
         </div>
 

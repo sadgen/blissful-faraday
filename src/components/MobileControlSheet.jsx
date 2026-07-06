@@ -197,24 +197,31 @@ export default function MobileControlSheet({
                 <div className="mobile-sheet-section-title">
                   <Compass size={14} /> 自动轮播速度
                 </div>
-                <div className="mobile-capsule-group">
-                  {[
-                    { label: '2 秒', ms: 2000 },
-                    { label: '3 秒', ms: 3000 },
-                    { label: '5 秒', ms: 5000 },
-                    { label: '10 秒', ms: 10000 }
-                  ].map(speed => {
-                    const isActive = globalSpeed === speed.ms;
-                    return (
-                      <button
-                        key={speed.ms}
-                        className={`mobile-capsule-btn ${isActive ? 'active' : ''}`}
-                        onClick={() => handleSpeedChange(speed.ms)}
-                      >
-                        {speed.label}
-                      </button>
-                    );
-                  })}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: '4px 0'
+                }}>
+                  <input
+                    type="range"
+                    min="1"
+                    max="30"
+                    step="0.5"
+                    value={globalSpeed / 1000}
+                    onChange={(e) => setGlobalSpeed(parseFloat(e.target.value) * 1000)}
+                    className="mobile-range-slider"
+                    style={{ flex: 1, height: '6px' }}
+                  />
+                  <span style={{
+                    fontSize: '0.85rem',
+                    color: 'var(--accent-purple)',
+                    fontWeight: 600,
+                    minWidth: '48px',
+                    textAlign: 'right'
+                  }}>
+                    {globalSpeed / 1000}秒
+                  </span>
                 </div>
               </div>
 
