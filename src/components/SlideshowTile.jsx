@@ -24,6 +24,8 @@ export default function SlideshowTile({
   onDragPositionChange,
   isOverlapping,
   intersections = [],
+  isSyncMode,
+  syncTrigger,
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [isMaximized, setIsMaximized] = useState(false);
@@ -89,6 +91,8 @@ export default function SlideshowTile({
     onCollectionChange,
     preloadAndAdvance,
     shouldStartFromLastRef,
+    isSyncMode,
+    syncTrigger,
   });
 
   // --- Hook 3: Tile Drag ---

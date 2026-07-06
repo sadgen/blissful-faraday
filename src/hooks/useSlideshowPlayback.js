@@ -26,6 +26,8 @@ export default function useSlideshowPlayback({
   // Cross-hook dependencies
   preloadAndAdvance,
   shouldStartFromLastRef,
+  isSyncMode,
+  syncTrigger,
 }) {
   const [localIsPlaying, setLocalIsPlaying] = useState(true);
   const [localSpeedMult, setLocalSpeedMult] = useState(1);
@@ -67,7 +69,7 @@ export default function useSlideshowPlayback({
   // Reset stagger flag when play state / duration / totalTiles changes
   useEffect(() => {
     staggerAppliedRef.current = false;
-  }, [isPlaying, duration, totalTiles]);
+  }, [isPlaying, duration, totalTiles, syncTrigger]);
 
   // --- Collection navigation ---
 
@@ -202,6 +204,16 @@ export default function useSlideshowPlayback({
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
     if (staggerTimeoutRef.current) { clearTimeout(staggerTimeoutRef.current); staggerTimeoutRef.current = null; }
 
+    // Sync mode: parent drives all tiles via syncTrigger
+    if (isSyncMode) {
+      if (isPlaying && activeIdx >= 0 && imagesRef.current.length > 0) {
+        advanceSlide(1);
+        resetProgressBar();
+      }
+      return;
+    }
+
+    // Async mode: original per-tile timer logic (unchanged)
     let targetTime = Date.now() + duration;
 
     if (isPlaying) {
@@ -235,7 +247,7 @@ export default function useSlideshowPlayback({
       if (timerRef.current) clearTimeout(timerRef.current);
       if (staggerTimeoutRef.current) clearTimeout(staggerTimeoutRef.current);
     };
-  }, [isPlaying, duration, totalTiles, tileId, globalSpeed, advanceSlide, resetProgressBar]);
+  }, [isSyncMode, syncTrigger, isPlaying, duration, totalTiles, tileId, globalSpeed, advanceSlide, resetProgressBar]);
 
   // --- handleCollectionChange ---
 

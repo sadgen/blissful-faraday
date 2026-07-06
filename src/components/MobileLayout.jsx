@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Play, Pause, Settings, Image as ImageIcon, ZoomIn, ZoomOut } from 'lucide-react';
 import MobileSlideshowCard from './MobileSlideshowCard';
+import ErrorBoundary from './ErrorBoundary';
 import MobileControlSheet from './MobileControlSheet';
 import '../mobile.css';
 
@@ -289,29 +290,30 @@ export default function MobileLayout({
               }}
             >
               {renderCollections.map((collName, index) => (
-                <MobileSlideshowCard
-                  key={index}
-                  tileId={index}
-                  collections={collections}
-                  displayedCollections={displayedCollections}
-                  onCollectionChange={handleCollectionChangeForTile}
-                  initialCollectionName={collName}
-                  globalSpeed={globalSpeed}
-                  globalIsPlaying={globalIsPlaying && isDocumentVisible}
-                  globalRefreshTrigger={globalRefreshTrigger}
-                  isSingle={activeTileCount === 1}
-                  globalTransitionEffect={globalTransitionEffect}
-                  totalTiles={activeTileCount}
-                  onAspectRatioChange={handleAspectRatioChange}
-                  sortMethod={sortMethod}
-                  zoomScale={zoomScale}
-                  intersections={tileIntersections[index] || []}
-                  onTitleClick={(folderName) => {
-                    setIsAutoTiling(false);
-                    setTileCount(1);
-                    handleCollectionChangeForTile(0, folderName);
-                  }}
-                />
+                <ErrorBoundary key={index} fallbackLabel="该窗口出现异常">
+                  <MobileSlideshowCard
+                    tileId={index}
+                    collections={collections}
+                    displayedCollections={displayedCollections}
+                    onCollectionChange={handleCollectionChangeForTile}
+                    initialCollectionName={collName}
+                    globalSpeed={globalSpeed}
+                    globalIsPlaying={globalIsPlaying && isDocumentVisible}
+                    globalRefreshTrigger={globalRefreshTrigger}
+                    isSingle={activeTileCount === 1}
+                    globalTransitionEffect={globalTransitionEffect}
+                    totalTiles={activeTileCount}
+                    onAspectRatioChange={handleAspectRatioChange}
+                    sortMethod={sortMethod}
+                    zoomScale={zoomScale}
+                    intersections={tileIntersections[index] || []}
+                    onTitleClick={(folderName) => {
+                      setIsAutoTiling(false);
+                      setTileCount(1);
+                      handleCollectionChangeForTile(0, folderName);
+                    }}
+                  />
+                </ErrorBoundary>
               ))}
             </div>
           </div>

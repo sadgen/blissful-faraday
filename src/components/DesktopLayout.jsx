@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
 import { 
   RefreshCw, FolderOpen, Save, X, Settings, Image, 
   AlertTriangle, Trash2, Sparkles, History, Shield
 } from 'lucide-react';
 import SlideshowTile from './SlideshowTile';
+import ErrorBoundary from './ErrorBoundary';
 import ControlHUD from './ControlHUD';
 import SecurityCenter from './SecurityCenter';
 
@@ -71,7 +72,9 @@ export default function DesktopLayout({
   onUpdateConfig,
   onRevokeSession,
   onClearLogs,
-  onLogout
+  onLogout,
+  isSyncMode,
+  setIsSyncMode,
 }) {
   const [isHistoryOpen, setIsHistoryOpen] = React.useState(false);
   const historyRef = React.useRef(null);
@@ -104,6 +107,37 @@ export default function DesktopLayout({
       fetchAdminConfig();
     }
   }, [activeTab, fetchAdminConfig]);
+
+  // Sync mode: single timer that drives all tiles simultaneously
+  const [syncTrigger, setSyncTrigger] = React.useState(0);
+  const syncTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (syncTimerRef.current) {
+      clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+    if (!isSyncMode || !globalIsPlaying) return;
+
+    let targetTime = Date.now() + globalSpeed;
+
+    const tick = () => {
+      setSyncTrigger(prev => prev + 1);
+      const elapsed = Date.now() - targetTime;
+      const nextDelay = Math.max(0, globalSpeed - elapsed);
+      targetTime += globalSpeed;
+      syncTimerRef.current = setTimeout(tick, nextDelay);
+    };
+
+    syncTimerRef.current = setTimeout(tick, globalSpeed);
+
+    return () => {
+      if (syncTimerRef.current) {
+        clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
+    };
+  }, [isSyncMode, globalSpeed, globalIsPlaying]);
 
   return (
     <div className="app-container">
@@ -152,24 +186,28 @@ export default function DesktopLayout({
                   height: `${position.height}px`
                 }}
               >
-                <SlideshowTile
-                  tileId={index}
-                  collections={collections}
-                  displayedCollections={displayedCollections}
-                  onCollectionChange={handleCollectionChangeForTile}
-                  initialCollectionName={collName}
-                  globalSpeed={globalSpeed}
-                  globalIsPlaying={globalIsPlaying && isDocumentVisible}
-                  globalRefreshTrigger={globalRefreshTrigger}
-                  isSingle={activeTileCount === 1}
-                  globalTransitionEffect={globalTransitionEffect}
-                  totalTiles={activeTileCount}
-                  onAspectRatioChange={handleAspectRatioChange}
-                  sortMethod={sortMethod}
-                  onDragPositionChange={onDragPositionChange}
-                  isOverlapping={overlappingTiles.has(index)}
-                  intersections={tileIntersections[index] || []}
-                />
+                <ErrorBoundary fallbackLabel="该窗口出现异常">
+                  <SlideshowTile
+                    tileId={index}
+                    collections={collections}
+                    displayedCollections={displayedCollections}
+                    onCollectionChange={handleCollectionChangeForTile}
+                    initialCollectionName={collName}
+                    globalSpeed={globalSpeed}
+                    globalIsPlaying={globalIsPlaying && isDocumentVisible}
+                    globalRefreshTrigger={globalRefreshTrigger}
+                    isSingle={activeTileCount === 1}
+                    globalTransitionEffect={globalTransitionEffect}
+                    totalTiles={activeTileCount}
+                    onAspectRatioChange={handleAspectRatioChange}
+                    sortMethod={sortMethod}
+                    onDragPositionChange={onDragPositionChange}
+                    isOverlapping={overlappingTiles.has(index)}
+                    intersections={tileIntersections[index] || []}
+                    isSyncMode={isSyncMode}
+                    syncTrigger={syncTrigger}
+                  />
+                </ErrorBoundary>
               </div>
             );
           })}
@@ -248,6 +286,8 @@ export default function DesktopLayout({
           isHUDpinned={isHUDpinned}
           setIsHUDpinned={setIsHUDpinned}
           onOpenLan={lanIp ? () => setShowLanModal(true) : null}
+          isSyncMode={isSyncMode}
+          setIsSyncMode={setIsSyncMode}
         />
       )}
 

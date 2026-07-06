@@ -13,6 +13,8 @@ export default function ControlHUD({
   setGlobalSpeed,
   globalIsPlaying,
   setGlobalIsPlaying,
+  isSyncMode,
+  setIsSyncMode,
   onShuffleAll,
   onOpenSettings,
   collectionsCount,
@@ -139,6 +141,38 @@ export default function ControlHUD({
               left: globalIsPlaying ? '16px' : '2px',
               transition: 'var(--transition-smooth)'
             }} />
+          </div>
+
+          {/* Sync/Async Mode Toggle */}
+          <div style={{ display: 'flex', gap: 3, background: 'rgba(0,0,0,0.2)', padding: '2px', borderRadius: '6px' }}>
+            <button
+              onClick={() => setIsSyncMode(false)}
+              style={{
+                background: !isSyncMode ? 'var(--accent-purple)' : 'transparent',
+                border: 'none',
+                color: !isSyncMode ? '#fff' : 'var(--text-secondary)',
+                fontSize: '0.6rem',
+                padding: '2px 6px',
+                borderRadius: '4px',
+                cursor: 'pointer'
+              }}
+            >
+              异步
+            </button>
+            <button
+              onClick={() => setIsSyncMode(true)}
+              style={{
+                background: isSyncMode ? 'var(--accent-purple)' : 'transparent',
+                border: 'none',
+                color: isSyncMode ? '#fff' : 'var(--text-secondary)',
+                fontSize: '0.6rem',
+                padding: '2px 6px',
+                borderRadius: '4px',
+                cursor: 'pointer'
+              }}
+            >
+              同步
+            </button>
           </div>
 
           {/* Speed control */}

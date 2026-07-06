@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import DesktopLayout from './components/DesktopLayout';
 import MobileLayout from './components/MobileLayout';
+import ErrorBoundary from './components/ErrorBoundary';
 import { RefreshCw } from 'lucide-react';
 import LoginOverlay from './components/LoginOverlay';
 
@@ -84,6 +85,7 @@ export default function App() {
   const [globalIsPlaying, setGlobalIsPlaying] = useState(savedConfig?.globalIsPlaying !== undefined ? savedConfig.globalIsPlaying : true);
   const [globalRefreshTrigger, setGlobalRefreshTrigger] = useState(0);
   const [globalTransitionEffect, setGlobalTransitionEffect] = useState(savedConfig?.globalTransitionEffect || 'none');
+  const [isSyncMode, setIsSyncMode] = useState(savedConfig?.isSyncMode !== undefined ? savedConfig.isSyncMode : false);
   
   // Track page visibility to pause/resume slideshow when tab is inactive/active
   const [isDocumentVisible, setIsDocumentVisible] = useState(document.visibilityState === 'visible');
@@ -431,6 +433,7 @@ export default function App() {
       globalSpeed,
       globalIsPlaying,
       globalTransitionEffect,
+      isSyncMode,
       sortMethod,
       isAutoTiling,
       zoomScale,
@@ -441,7 +444,7 @@ export default function App() {
     } catch (err) {
       console.warn('Failed to save config:', err);
     }
-  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, sortMethod, isAutoTiling, zoomScale, isHUDpinned]);
+  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, isSyncMode, sortMethod, isAutoTiling, zoomScale, isHUDpinned]);
 
   // Get current grid config
   const gridConfig = GRID_PRESETS[tileCount] || GRID_PRESETS[1];
@@ -911,65 +914,70 @@ export default function App() {
 
   if (isMobile) {
     return (
-      <MobileLayout
-        collections={collections}
-        displayedCollections={displayedCollections}
-        handleCollectionChangeForTile={handleCollectionChangeForTile}
-        globalSpeed={globalSpeed}
-        globalIsPlaying={globalIsPlaying}
-        isDocumentVisible={isDocumentVisible}
-        globalRefreshTrigger={globalRefreshTrigger}
-        activeTileCount={activeTileCount}
-        globalTransitionEffect={globalTransitionEffect}
-        handleAspectRatioChange={handleAspectRatioChange}
-        sortMethod={sortMethod}
-        isLoading={isLoading}
-        fetchError={fetchError}
-        scanDirectory={scanDirectory}
-        fetchCollections={fetchCollections}
-        setIsSettingsOpen={setIsSettingsOpen}
-        isSettingsOpen={isSettingsOpen}
-        tileCount={tileCount}
-        setTileCount={setTileCount}
-        isAutoTiling={isAutoTiling}
-        setIsAutoTiling={setIsAutoTiling}
-        setGlobalSpeed={setGlobalSpeed}
-        setGlobalIsPlaying={setGlobalIsPlaying}
-        shuffleAllTiles={shuffleAllTiles}
-        setGlobalTransitionEffect={setGlobalTransitionEffect}
-        setSortMethod={setSortMethod}
-        zoomScale={zoomScale}
-        setZoomScale={setZoomScale}
-        zoomIn={zoomIn}
-        zoomOut={zoomOut}
-        inputScanDir={inputScanDir}
-        setInputScanDir={setInputScanDir}
-        handleSaveDirectory={handleSaveDirectory}
-        dirError={dirError}
-        isSubmittingDir={isSubmittingDir}
-        fetchCacheInfo={fetchCacheInfo}
-        setCacheMessage={setCacheMessage}
-        cacheInfo={cacheInfo}
-        cacheMessage={cacheMessage}
-        handleClearCache={handleClearCache}
-        isClearingCache={isClearingCache}
-        gridConfig={gridConfig}
-        lanIp={lanIp}
-        directoryHistory={directoryHistory}
-        onRemoveHistoryItem={handleRemoveHistoryItem}
-        adminConfig={adminConfig}
-        authError={authError}
-        fetchAdminConfig={fetchAdminConfig}
-        onUpdateConfig={handleUpdateAdminConfig}
-        onRevokeSession={handleRevokeSession}
-        onClearLogs={handleClearLogs}
-        onLogout={handleLogout}
-      />
+      <ErrorBoundary>
+        <MobileLayout
+          collections={collections}
+          displayedCollections={displayedCollections}
+          handleCollectionChangeForTile={handleCollectionChangeForTile}
+          globalSpeed={globalSpeed}
+          globalIsPlaying={globalIsPlaying}
+          isDocumentVisible={isDocumentVisible}
+          globalRefreshTrigger={globalRefreshTrigger}
+          activeTileCount={activeTileCount}
+          globalTransitionEffect={globalTransitionEffect}
+          isSyncMode={isSyncMode}
+          setIsSyncMode={setIsSyncMode}
+          handleAspectRatioChange={handleAspectRatioChange}
+          sortMethod={sortMethod}
+          isLoading={isLoading}
+          fetchError={fetchError}
+          scanDirectory={scanDirectory}
+          fetchCollections={fetchCollections}
+          setIsSettingsOpen={setIsSettingsOpen}
+          isSettingsOpen={isSettingsOpen}
+          tileCount={tileCount}
+          setTileCount={setTileCount}
+          isAutoTiling={isAutoTiling}
+          setIsAutoTiling={setIsAutoTiling}
+          setGlobalSpeed={setGlobalSpeed}
+          setGlobalIsPlaying={setGlobalIsPlaying}
+          shuffleAllTiles={shuffleAllTiles}
+          setGlobalTransitionEffect={setGlobalTransitionEffect}
+          setSortMethod={setSortMethod}
+          zoomScale={zoomScale}
+          setZoomScale={setZoomScale}
+          zoomIn={zoomIn}
+          zoomOut={zoomOut}
+          inputScanDir={inputScanDir}
+          setInputScanDir={setInputScanDir}
+          handleSaveDirectory={handleSaveDirectory}
+          dirError={dirError}
+          isSubmittingDir={isSubmittingDir}
+          fetchCacheInfo={fetchCacheInfo}
+          setCacheMessage={setCacheMessage}
+          cacheInfo={cacheInfo}
+          cacheMessage={cacheMessage}
+          handleClearCache={handleClearCache}
+          isClearingCache={isClearingCache}
+          gridConfig={gridConfig}
+          lanIp={lanIp}
+          directoryHistory={directoryHistory}
+          onRemoveHistoryItem={handleRemoveHistoryItem}
+          adminConfig={adminConfig}
+          authError={authError}
+          fetchAdminConfig={fetchAdminConfig}
+          onUpdateConfig={handleUpdateAdminConfig}
+          onRevokeSession={handleRevokeSession}
+          onClearLogs={handleClearLogs}
+          onLogout={handleLogout}
+        />
+      </ErrorBoundary>
     );
   }
 
   return (
-    <DesktopLayout
+    <ErrorBoundary>
+      <DesktopLayout
       collections={collections}
       displayedCollections={displayedCollections}
       scaledPositions={scaledPositions}
@@ -984,6 +992,8 @@ export default function App() {
       globalRefreshTrigger={globalRefreshTrigger}
       activeTileCount={activeTileCount}
       globalTransitionEffect={globalTransitionEffect}
+      isSyncMode={isSyncMode}
+      setIsSyncMode={setIsSyncMode}
       handleAspectRatioChange={handleAspectRatioChange}
       sortMethod={sortMethod}
       isLoading={isLoading}
@@ -1033,5 +1043,6 @@ export default function App() {
       onClearLogs={handleClearLogs}
       onLogout={handleLogout}
     />
+    </ErrorBoundary>
   );
 }
