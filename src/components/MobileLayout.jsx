@@ -148,7 +148,9 @@ export default function MobileLayout({
   onUpdateConfig,
   onRevokeSession,
   onClearLogs,
-  onLogout
+  onLogout,
+  isSyncMode,
+  setIsSyncMode,
 }) {
   const [showZoomSlider, setShowZoomSlider] = useState(false);
   const sliderTimeoutRef = useRef(null);
@@ -170,6 +172,37 @@ export default function MobileLayout({
       }
     };
   }, []);
+
+  // Sync mode: single timer that drives all tiles simultaneously
+  const [syncTrigger, setSyncTrigger] = React.useState(0);
+  const syncTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (syncTimerRef.current) {
+      clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+    if (!isSyncMode || !globalIsPlaying) return;
+
+    let targetTime = Date.now() + globalSpeed;
+
+    const tick = () => {
+      setSyncTrigger(prev => prev + 1);
+      const elapsed = Date.now() - targetTime;
+      const nextDelay = Math.max(0, globalSpeed - elapsed);
+      targetTime += globalSpeed;
+      syncTimerRef.current = setTimeout(tick, nextDelay);
+    };
+
+    syncTimerRef.current = setTimeout(tick, globalSpeed);
+
+    return () => {
+      if (syncTimerRef.current) {
+        clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
+    };
+  }, [isSyncMode, globalSpeed, globalIsPlaying]);
 
   // Calculate relative overlap intersections for mobile tiles
   const tileIntersections = React.useMemo(() => {
@@ -312,6 +345,8 @@ export default function MobileLayout({
                       setTileCount(1);
                       handleCollectionChangeForTile(0, folderName);
                     }}
+                    isSyncMode={isSyncMode}
+                    syncTrigger={syncTrigger}
                   />
                 </ErrorBoundary>
               ))}
@@ -403,6 +438,8 @@ export default function MobileLayout({
         onRevokeSession={onRevokeSession}
         onClearLogs={onClearLogs}
         onLogout={onLogout}
+        isSyncMode={isSyncMode}
+        setIsSyncMode={setIsSyncMode}
       />
 
       {/* 5. Floating Vertical Zoom Slider on Right Screen Edge */}

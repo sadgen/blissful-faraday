@@ -17,7 +17,9 @@ export default function MobileSlideshowCard({
   sortMethod,
   zoomScale = 1,
   onTitleClick = null,
-  intersections = []
+  intersections = [],
+  isSyncMode,
+  syncTrigger,
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [images, setImages] = useState([]);
@@ -321,7 +323,7 @@ export default function MobileSlideshowCard({
 
   useEffect(() => {
     staggerAppliedRef.current = false;
-  }, [isPlaying, duration, totalTiles]);
+  }, [isPlaying, duration, totalTiles, syncTrigger]);
 
   // Synchronized stagger and playback logic
   useEffect(() => {
@@ -334,6 +336,16 @@ export default function MobileSlideshowCard({
       staggerTimeoutRef.current = null;
     }
 
+    // Sync mode: parent drives all tiles via syncTrigger
+    if (isSyncMode) {
+      if (isPlaying && activeIdx >= 0 && imagesRef.current.length > 0) {
+        advanceSlide(1);
+        resetProgressBar();
+      }
+      return;
+    }
+
+    // Async mode: original staggered setInterval logic (unchanged)
     if (isPlaying) {
       const staggerDelay = tileId * (globalSpeed / totalTiles);
       if (!staggerAppliedRef.current && totalTiles > 1 && staggerDelay > 0) {
@@ -345,7 +357,7 @@ export default function MobileSlideshowCard({
           advanceSlide(1);
           setBarDuration(duration);
           resetProgressBar();
-          
+
           timerRef.current = setInterval(() => {
             advanceSlide(1);
             resetProgressBar();
@@ -364,7 +376,7 @@ export default function MobileSlideshowCard({
       if (timerRef.current) clearInterval(timerRef.current);
       if (staggerTimeoutRef.current) clearTimeout(staggerTimeoutRef.current);
     };
-  }, [isPlaying, duration, totalTiles, tileId]);
+  }, [isSyncMode, syncTrigger, isPlaying, duration, totalTiles, tileId, globalSpeed]);
 
   const preloadImages = (startIdx, count) => {
     const currentImages = imagesRef.current;

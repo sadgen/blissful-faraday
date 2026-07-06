@@ -43,7 +43,9 @@ export default function MobileControlSheet({
   onUpdateConfig,
   onRevokeSession,
   onClearLogs,
-  onLogout
+  onLogout,
+  isSyncMode,
+  setIsSyncMode,
 }) {
   const [isHistoryOpen, setIsHistoryOpen] = React.useState(false);
   const historyRef = React.useRef(null);
@@ -213,6 +215,27 @@ export default function MobileControlSheet({
                       </button>
                     );
                   })}
+                </div>
+              </div>
+
+              {/* Sync/Async Mode Toggle */}
+              <div className="mobile-sheet-section">
+                <div className="mobile-sheet-section-title">
+                  <Sliders size={14} /> 轮播模式
+                </div>
+                <div className="mobile-capsule-group">
+                  <button
+                    className={`mobile-capsule-btn ${!isSyncMode ? 'active' : ''}`}
+                    onClick={() => setIsSyncMode(false)}
+                  >
+                    异步 (各自独立)
+                  </button>
+                  <button
+                    className={`mobile-capsule-btn ${isSyncMode ? 'active' : ''}`}
+                    onClick={() => setIsSyncMode(true)}
+                  >
+                    同步 (同时切换)
+                  </button>
                 </div>
               </div>
 
