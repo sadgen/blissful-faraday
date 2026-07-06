@@ -117,7 +117,6 @@ export default function useSlideshowPlayback({
     if (currentImages.length === 0) return;
 
     const currentIdx = activeIdx;
-    setOutgoingIdx(currentIdx);
 
     const nextIdx = currentIdx + direction;
     const currentCollNameVal = currentCollNameRef.current;
@@ -144,7 +143,7 @@ export default function useSlideshowPlayback({
     }
 
     // Normal advance: use preloadAndAdvance from useImagePreloader
-    preloadAndAdvance(nextIdx, currentCollNameVal);
+    preloadAndAdvance(nextIdx, currentCollNameVal, currentIdx);
   }, [activeIdx, imagesRef, currentCollNameRef, setOutgoingIdx,
       getNextUniqueCollection, setCurrentCollName, onCollectionChange,
       tileId, setActiveIdx, preloadAndAdvance, shouldStartFromLastRef]);

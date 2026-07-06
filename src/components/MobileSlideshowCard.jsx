@@ -212,25 +212,52 @@ export default function MobileSlideshowCard({
         if (data.error) {
           throw new Error(data.error);
         }
-        setImages(data.images || []);
-        
-        let startIdx = 0;
-        if (shouldStartFromLastRef.current && data.images && data.images.length > 0) {
-          startIdx = data.images.length - 1;
-          shouldStartFromLastRef.current = false;
-        }
-        
-        setActiveIdx(startIdx);
-        setOutgoingIdx(null);
-        
-        if (data.images && data.images.length > 0) {
-          detectAspectRatio(currentCollName, data.images[0]);
-          setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1000);
+        const newImages = data.images || [];
+
+        // Preload first image before switching (prevents black flash)
+        if (newImages.length > 0) {
+          const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(newImages[0])}`;
+          const preloadImg = new Image();
+          preloadImg.onload = () => {
+            setImages(newImages);
+            let startIdx = 0;
+            if (shouldStartFromLastRef.current && newImages.length > 0) {
+              startIdx = newImages.length - 1;
+              shouldStartFromLastRef.current = false;
+            }
+            setActiveIdx(startIdx);
+            setOutgoingIdx(null);
+            setIsLoadingImages(false);
+            if (newImages.length > 0) {
+              detectAspectRatio(currentCollName, newImages[0]);
+              setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1000);
+            }
+          };
+          preloadImg.onerror = () => {
+            setImages(newImages);
+            let startIdx = 0;
+            if (shouldStartFromLastRef.current && newImages.length > 0) {
+              startIdx = newImages.length - 1;
+              shouldStartFromLastRef.current = false;
+            }
+            setActiveIdx(startIdx);
+            setOutgoingIdx(null);
+            setIsLoadingImages(false);
+            if (newImages.length > 0) {
+              detectAspectRatio(currentCollName, newImages[0]);
+              setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1000);
+            }
+          };
+          preloadImg.src = imgUrl;
+        } else {
+          setImages([]);
+          setActiveIdx(0);
+          setOutgoingIdx(null);
+          setIsLoadingImages(false);
         }
       } catch (err) {
         console.error(err);
         setLoadError(err.message);
-      } finally {
         setIsLoadingImages(false);
       }
     };
@@ -404,7 +431,7 @@ export default function MobileSlideshowCard({
     }
   };
 
-  const preloadAndAdvance = (nextIdx, collName) => {
+  const preloadAndAdvance = (nextIdx, collName, outgoingIdx) => {
     const imgName = imagesRef.current[nextIdx];
     if (!imgName) return;
 
@@ -413,6 +440,7 @@ export default function MobileSlideshowCard({
     
     if (cached && cached.img && cached.img.complete) {
       setTileAspectRatio(cached.aspectRatio || (cached.img.width / cached.img.height));
+      if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
       resetProgressBar();
       setTimeout(() => setOutgoingIdx(null), 400);
@@ -440,6 +468,7 @@ export default function MobileSlideshowCard({
         const finalAspectRatio = img.width / img.height;
         preloadCacheRef.current.set(cacheKey, { img, aspectRatio: finalAspectRatio });
         setTileAspectRatio(finalAspectRatio);
+        if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
         setActiveIdx(nextIdx);
         resetProgressBar();
         setTimeout(() => setOutgoingIdx(null), 400);
@@ -453,6 +482,7 @@ export default function MobileSlideshowCard({
         const finalAspectRatio = img.width / img.height;
         preloadCacheRef.current.set(cacheKey, { img, aspectRatio: finalAspectRatio });
         setTileAspectRatio(finalAspectRatio);
+        if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
         setActiveIdx(nextIdx);
         resetProgressBar();
         setTimeout(() => setOutgoingIdx(null), 400);
@@ -467,7 +497,6 @@ export default function MobileSlideshowCard({
     if (currentImages.length === 0) return;
     
     const currentIdx = activeIdxRef.current;
-    setOutgoingIdx(currentIdx);
     
     let nextIdx = currentIdx + direction;
     const currentCollNameVal = currentCollNameRef.current;
@@ -495,7 +524,7 @@ export default function MobileSlideshowCard({
       return;
     }
     
-    preloadAndAdvance(nextIdx, currentCollNameVal);
+    preloadAndAdvance(nextIdx, currentCollNameVal, currentIdx);
   };
 
   const skipToNextCollection = (direction = 1) => {

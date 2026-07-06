@@ -144,23 +144,47 @@ export default function useImagePreloader({
         }
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-        setImages(data.images || []);
+        const newImages = data.images || [];
 
-        let startIdx = 0;
-        if (shouldStartFromLastRef.current && data.images && data.images.length > 0) {
-          startIdx = data.images.length - 1;
-          shouldStartFromLastRef.current = false;
-        }
-        setActiveIdx(startIdx);
-        setOutgoingIdx(null);
-
-        if (data.images && data.images.length > 0) {
-          setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1500);
+        // Preload first image before switching (prevents black flash)
+        if (newImages.length > 0) {
+          const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(newImages[0])}`;
+          const preloadImg = new Image();
+          preloadImg.onload = () => {
+            setImages(newImages);
+            let startIdx = 0;
+            if (shouldStartFromLastRef.current && newImages.length > 0) {
+              startIdx = newImages.length - 1;
+              shouldStartFromLastRef.current = false;
+            }
+            setActiveIdx(startIdx);
+            setOutgoingIdx(null);
+            setIsLoadingImages(false);
+            setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1500);
+          };
+          preloadImg.onerror = () => {
+            // Fallback: switch anyway even if preload fails
+            setImages(newImages);
+            let startIdx = 0;
+            if (shouldStartFromLastRef.current && newImages.length > 0) {
+              startIdx = newImages.length - 1;
+              shouldStartFromLastRef.current = false;
+            }
+            setActiveIdx(startIdx);
+            setOutgoingIdx(null);
+            setIsLoadingImages(false);
+            setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1500);
+          };
+          preloadImg.src = imgUrl;
+        } else {
+          setImages([]);
+          setActiveIdx(0);
+          setOutgoingIdx(null);
+          setIsLoadingImages(false);
         }
       } catch (err) {
         console.error(err);
         setLoadError(err.message);
-      } finally {
         setIsLoadingImages(false);
       }
     };
@@ -191,7 +215,7 @@ export default function useImagePreloader({
   }, [currentCollName]);
 
   // Pre-load and advance slide
-  const preloadAndAdvance = useCallback((nextIdx, collName) => {
+  const preloadAndAdvance = useCallback((nextIdx, collName, outgoingIdx) => {
     const imgName = imagesRef.current[nextIdx];
     if (!imgName) return;
     const cacheKey = `${collName}:${imgName}`;
@@ -201,6 +225,7 @@ export default function useImagePreloader({
       preloadCacheRef.current.delete(cacheKey);
       preloadCacheRef.current.set(cacheKey, cached);
       setTileAspectRatio(cached.aspectRatio || (cached.img.width / cached.img.height));
+      if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
       setTimeout(() => setOutgoingIdx(null), 1500);
       preloadImages(nextIdx + 1, PRELOAD_COUNT);
@@ -225,6 +250,7 @@ export default function useImagePreloader({
           const finalAspectRatio = img.width / img.height;
           setCacheLRU(preloadCacheRef.current, cacheKey, { img, aspectRatio: finalAspectRatio });
           setTileAspectRatio(finalAspectRatio);
+          if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
           setActiveIdx(nextIdx);
           setTimeout(() => setOutgoingIdx(null), 1500);
           preloadImages(nextIdx + 1, PRELOAD_COUNT);
@@ -237,6 +263,7 @@ export default function useImagePreloader({
           const finalAspectRatio = img.width / img.height;
           setCacheLRU(preloadCacheRef.current, cacheKey, { img, aspectRatio: finalAspectRatio });
           setTileAspectRatio(finalAspectRatio);
+          if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
           setActiveIdx(nextIdx);
           setTimeout(() => setOutgoingIdx(null), 1500);
           preloadImages(nextIdx + 1, PRELOAD_COUNT);
