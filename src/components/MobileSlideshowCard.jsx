@@ -71,7 +71,7 @@ export default function MobileSlideshowCard({
 
   // Preload cache for faster image switching
   const preloadCacheRef = useRef(new Map());
-  const PRELOAD_COUNT = 1;
+  const PRELOAD_COUNT = 3;
 
   const activeIdxRef = useRef(activeIdx);
   const imagesRef = useRef(images);

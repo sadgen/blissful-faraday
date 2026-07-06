@@ -59,12 +59,14 @@ export default function useSlideshowPlayback({
     };
   }, []);
 
-  // Sync barDuration with duration changes (skip during initial stagger phase)
+  // Sync barDuration — in sync mode, always match globalSpeed regardless of localSpeedMult
   useEffect(() => {
-    if (staggerAppliedRef.current || totalTiles <= 1) {
+    if (isSyncMode) {
+      setBarDuration(globalSpeed);
+    } else if (staggerAppliedRef.current || totalTiles <= 1) {
       setBarDuration(duration);
     }
-  }, [duration, totalTiles]);
+  }, [isSyncMode, globalSpeed, duration, totalTiles]);
 
   // Reset stagger flag when play state / duration / totalTiles changes
   useEffect(() => {

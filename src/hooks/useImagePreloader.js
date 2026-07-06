@@ -202,7 +202,7 @@ export default function useImagePreloader({
       preloadCacheRef.current.set(cacheKey, cached);
       setTileAspectRatio(cached.aspectRatio || (cached.img.width / cached.img.height));
       setActiveIdx(nextIdx);
-      setTimeout(() => setOutgoingIdx(null), 600);
+      setTimeout(() => setOutgoingIdx(null), 1500);
       preloadImages(nextIdx + 1, PRELOAD_COUNT);
       return;
     }
@@ -226,7 +226,7 @@ export default function useImagePreloader({
           setCacheLRU(preloadCacheRef.current, cacheKey, { img, aspectRatio: finalAspectRatio });
           setTileAspectRatio(finalAspectRatio);
           setActiveIdx(nextIdx);
-          setTimeout(() => setOutgoingIdx(null), 600);
+          setTimeout(() => setOutgoingIdx(null), 1500);
           preloadImages(nextIdx + 1, PRELOAD_COUNT);
         };
         img.src = imgUrl;
@@ -238,7 +238,7 @@ export default function useImagePreloader({
           setCacheLRU(preloadCacheRef.current, cacheKey, { img, aspectRatio: finalAspectRatio });
           setTileAspectRatio(finalAspectRatio);
           setActiveIdx(nextIdx);
-          setTimeout(() => setOutgoingIdx(null), 600);
+          setTimeout(() => setOutgoingIdx(null), 1500);
           preloadImages(nextIdx + 1, PRELOAD_COUNT);
         };
         img.src = imgUrl;
