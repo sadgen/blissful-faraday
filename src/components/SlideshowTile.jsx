@@ -48,9 +48,20 @@ export default function SlideshowTile({
   const dragStartRef = useRef({ x: 0, y: 0 });
   const positionRef = useRef({ x: 0, y: 0 });
 
-  // Preload cache for faster image switching
+  // Preload cache for faster image switching (LRU eviction)
   const preloadCacheRef = useRef(new Map());
-  const PRELOAD_COUNT = 1; // Only preload the next 1 image instead of 5
+  const PRELOAD_COUNT = 5; // Preload up to 5 images with LRU eviction
+
+  // LRU-aware cache setter: deletes and re-sets to maintain access order
+  const setCacheLRU = (cacheKey, value) => {
+    const map = preloadCacheRef.current;
+    if (map.has(cacheKey)) map.delete(cacheKey);
+    map.set(cacheKey, value);
+    if (map.size > PRELOAD_COUNT) {
+      const oldest = map.keys().next().value;
+      if (oldest) map.delete(oldest);
+    }
+  };
 
   const activeIdxRef = useRef(activeIdx);
   const imagesRef = useRef(images);
@@ -183,7 +194,7 @@ export default function SlideshowTile({
     if (images.length > 0 && activeIdx >= 0 && activeIdx < images.length) {
       detectAspectRatio(currentCollName, images[activeIdx]);
     }
-  }, [activeIdx, currentCollName, images.length > 0 ? images : []]);
+  }, [activeIdx, currentCollName, images.length]);
 
   // Fetch images dynamically (lazy loading) when the active collection name changes
   useEffect(() => {
@@ -344,10 +355,10 @@ export default function SlideshowTile({
     staggerAppliedRef.current = false;
   }, [isPlaying, duration, totalTiles]);
 
-  // 2. Playback logic: Slide advancing interval with sequential stagger delay
+  // 2. Playback logic: Slide advancing with recursive setTimeout to avoid drift
   useEffect(() => {
     if (timerRef.current) {
-      clearInterval(timerRef.current);
+      clearTimeout(timerRef.current);
       timerRef.current = null;
     }
     if (staggerTimeoutRef.current) {
@@ -355,7 +366,18 @@ export default function SlideshowTile({
       staggerTimeoutRef.current = null;
     }
 
+    let targetTime = Date.now() + duration;
+
     if (isPlaying) {
+      const scheduleNext = () => {
+        advanceSlide(1);
+        resetProgressBar();
+        const elapsed = Date.now() - targetTime;
+        const nextDelay = Math.max(0, duration - elapsed);
+        targetTime += duration;
+        timerRef.current = setTimeout(scheduleNext, nextDelay);
+      };
+
       // Stagger delay: distribute windows evenly across the global speed cycle
       // Each window starts at a different time so they refresh sequentially
       // All windows will refresh once within globalSpeed milliseconds
@@ -370,24 +392,20 @@ export default function SlideshowTile({
           advanceSlide(1);
           setBarDuration(duration);
           resetProgressBar();
-          
-          timerRef.current = setInterval(() => {
-            advanceSlide(1);
-            resetProgressBar();
-          }, duration);
+
+          targetTime = Date.now() + duration;
+          timerRef.current = setTimeout(scheduleNext, duration);
         }, staggerDelay);
       } else {
         // No stagger or stagger already applied
         setBarDuration(duration);
-        timerRef.current = setInterval(() => {
-          advanceSlide(1);
-          resetProgressBar();
-        }, duration);
+        targetTime = Date.now() + duration;
+        timerRef.current = setTimeout(scheduleNext, duration);
       }
     }
 
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+      if (timerRef.current) clearTimeout(timerRef.current);
       if (staggerTimeoutRef.current) clearTimeout(staggerTimeoutRef.current);
     };
   }, [isPlaying, duration, totalTiles, tileId]);
@@ -434,8 +452,10 @@ export default function SlideshowTile({
     const cacheKey = `${collName}:${imgName}`;
     const cached = preloadCacheRef.current.get(cacheKey);
     
-    // If cached, use immediately (both img and aspectRatio)
+    // If cached, use immediately (both img and aspectRatio) — also bump LRU order
     if (cached && cached.img && cached.img.complete) {
+      preloadCacheRef.current.delete(cacheKey);
+      preloadCacheRef.current.set(cacheKey, cached);
       setTileAspectRatio(cached.aspectRatio || (cached.img.width / cached.img.height));
       setActiveIdx(nextIdx);
       resetProgressBar();
@@ -467,7 +487,7 @@ export default function SlideshowTile({
       const img = new Image();
       img.onload = () => {
         const finalAspectRatio = img.width / img.height;
-        preloadCacheRef.current.set(cacheKey, { img, aspectRatio: finalAspectRatio });
+        setCacheLRU(cacheKey, { img, aspectRatio: finalAspectRatio });
         setTileAspectRatio(finalAspectRatio);
         setActiveIdx(nextIdx);
         resetProgressBar();
@@ -483,7 +503,7 @@ export default function SlideshowTile({
       const img = new Image();
       img.onload = () => {
         const finalAspectRatio = img.width / img.height;
-        preloadCacheRef.current.set(cacheKey, { img, aspectRatio: finalAspectRatio });
+        setCacheLRU(cacheKey, { img, aspectRatio: finalAspectRatio });
         setTileAspectRatio(finalAspectRatio);
         setActiveIdx(nextIdx);
         resetProgressBar();
@@ -790,12 +810,7 @@ export default function SlideshowTile({
               animation: 'spin 1s linear infinite'
             }} />
             <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>正在扫描图片...</span>
-            <style dangerouslySetInnerHTML={{__html: `
-              @keyframes spin {
-                from { transform: rotate(0deg); }
-                to { transform: rotate(360deg); }
-              }
-            `}} />
+
           </div>
         ) : loadError ? (
           <div style={{ zIndex: 3, color: '#ef4444', fontSize: '0.75rem', padding: '10px', textAlign: 'center' }}>

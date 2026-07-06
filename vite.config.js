@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
 import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -211,7 +212,7 @@ function saveAuthConfig(config) {
 }
 
 function hashPassword(password) {
-  return crypto.createHash('sha256').update(password).digest('hex');
+  return bcrypt.hashSync(password, 10);
 }
 
 function logEvent(config, event, ip, details = '') {
@@ -301,8 +302,7 @@ function imageScannerApiPlugin() {
             return;
           }
           
-          const submittedHash = hashPassword(data.password || '');
-          if (submittedHash === authConfig.passwordHash) {
+          if (authConfig.passwordHash && bcrypt.compareSync(data.password || '', authConfig.passwordHash)) {
             const token = crypto.randomBytes(32).toString('hex');
             const expiresAt = Date.now() + authConfig.sessionMaxAge;
             
@@ -396,8 +396,7 @@ function imageScannerApiPlugin() {
           
           if (data.newPassword) {
             if (authConfig.enabled && authConfig.passwordHash) {
-              const oldHash = hashPassword(data.oldPassword || '');
-              if (oldHash !== authConfig.passwordHash) {
+              if (!bcrypt.compareSync(data.oldPassword || '', authConfig.passwordHash)) {
                 res.writeHead(403, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: '旧密码输入错误' }));
                 return;

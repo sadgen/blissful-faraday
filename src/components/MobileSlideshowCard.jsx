@@ -818,17 +818,7 @@ export default function MobileSlideshowCard({
         )}
       </div>
 
-      {/* Inject custom animation styles for progress indicator */}
-      <style dangerouslySetInnerHTML={{__html: `
-        @keyframes mobileProgress {
-          from { transform: scaleX(0); }
-          to { transform: scaleX(1); }
-        }
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `}} />
+
     </>
   );
 }

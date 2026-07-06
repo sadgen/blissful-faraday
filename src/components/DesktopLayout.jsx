@@ -546,30 +546,29 @@ export default function DesktopLayout({
               手机连入播放器
             </h3>
             
-            {/* Direct text display or QR code placeholder if qr-generator not installed */}
             <div style={{
-              background: '#fff',
-              padding: 16,
+              background: 'var(--bg-darker)',
+              padding: 20,
               borderRadius: 12,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              boxShadow: '0 10px 30px rgba(0,0,0,0.5)'
+              border: '1px solid var(--glass-border)'
             }}>
-              {/* Dynamic QR Code via public API to avoid extra package dependencies */}
-              <img 
-                src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`http://${lanIp}:3000/`)}`}
-                alt="QR Code"
-                style={{ width: 200, height: 200 }}
-              />
+              <span style={{
+                fontSize: '0.85rem',
+                color: 'var(--text-primary)',
+                fontFamily: 'monospace',
+                wordBreak: 'break-all',
+                textAlign: 'center'
+              }}>
+                http://{lanIp}:3000/
+              </span>
             </div>
             
             <div style={{ textAlign: 'center', width: '100%' }}>
               <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: 6 }}>
                 请确保您的手机与电脑连接在<strong>同一个 Wi-Fi (局域网)</strong>。
-              </span>
-              <span style={{ fontSize: '0.8rem', color: '#fff', display: 'block', background: 'rgba(0,0,0,0.3)', padding: '6px 12px', borderRadius: 6, fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                http://{lanIp}:3000/
               </span>
             </div>
 
@@ -586,13 +585,6 @@ export default function DesktopLayout({
           </div>
         </div>
       )}
-
-      <style dangerouslySetInnerHTML={{__html: `
-        @keyframes fadeIn {
-          from { opacity: 0; transform: scale(0.95); }
-          to { opacity: 1; transform: scale(1); }
-        }
-      `}} />
 
     </div>
   );
