@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import DesktopLayout from './components/DesktopLayout';
 import MobileLayout from './components/MobileLayout';
 import ErrorBoundary from './components/ErrorBoundary';
 import { RefreshCw } from 'lucide-react';
+
 import LoginOverlay from './components/LoginOverlay';
 
 // Preset grid configurations for each tile count
@@ -86,7 +87,9 @@ export default function App() {
   const [globalRefreshTrigger, setGlobalRefreshTrigger] = useState(0);
   const [globalTransitionEffect, setGlobalTransitionEffect] = useState(savedConfig?.globalTransitionEffect || 'none');
   const [isSyncMode, setIsSyncMode] = useState(savedConfig?.isSyncMode !== undefined ? savedConfig.isSyncMode : false);
-  
+  const [videoSpeed, setVideoSpeed] = useState(savedConfig?.videoSpeed || 2);
+  const [imageSort, setImageSort] = useState(savedConfig?.imageSort || 'name');
+
   // Track page visibility to pause/resume slideshow when tab is inactive/active
   const [isDocumentVisible, setIsDocumentVisible] = useState(document.visibilityState === 'visible');
 
@@ -199,12 +202,83 @@ export default function App() {
     }
   }, []);
 
+  // Fetch collections from API
+  const fetchCollections = async () => {
+    try {
+      // Only show loader if we have no cached collections to prevent full-screen spinner on refresh
+      if (rawCollections.length === 0) {
+        setIsLoading(true);
+      }
+      setFetchError('');
+      const data = await safeFetchJSON('/api/collections');
+      
+      const nextCollections = data.collections || [];
+      const nextScanDirectory = data.scanDirectory || '';
+      
+      setRawCollections(nextCollections);
+      setScanDirectory(nextScanDirectory);
+      setInputScanDir(nextScanDirectory);
+      
+      // Update local storage cache
+      try {
+        localStorage.setItem('blissfulFaradayCollectionsCache', JSON.stringify({
+          collections: nextCollections,
+          scanDirectory: nextScanDirectory
+        }));
+      } catch (err) {
+        console.warn('Failed to cache collections in localStorage:', err);
+      }
+    } catch (err) {
+      if (err.isStaticFallback) {
+        console.info('Backend scanner is unavailable. Using cached local collections (static hosting/offline mode).');
+      } else {
+        console.error('Failed to fetch collections:', err.message || err);
+        setFetchError(err.message);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const [deletedAccounts, setDeletedAccounts] = useState([]);
+
+  const fetchDeletedAccounts = useCallback(async () => {
+    try {
+      const data = await safeFetchJSON('/api/collection/deleted');
+      setDeletedAccounts(data.usernames || []);
+    } catch (err) {
+      if (err.isStaticFallback) {
+        setDeletedAccounts([]);
+      }
+    }
+  }, []);
+
+  const handleRestoreAccount = useCallback(async (username) => {
+    try {
+      const res = await fetch('/api/collection/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || '恢复失败');
+      }
+      await fetchDeletedAccounts();
+      await fetchCollections();
+    } catch (err) {
+      console.error('Failed to restore account:', err);
+      alert(`恢复失败: ${err.message}`);
+    }
+  }, [fetchDeletedAccounts, fetchCollections]);
+
   // Fetch admin config automatically on settings open
   useEffect(() => {
     if (isSettingsOpen && isAuthenticated) {
       fetchAdminConfig();
+      fetchDeletedAccounts();
     }
-  }, [isSettingsOpen, isAuthenticated, fetchAdminConfig]);
+  }, [isSettingsOpen, isAuthenticated, fetchAdminConfig, fetchDeletedAccounts]);
 
   // Initial check
   useEffect(() => {
@@ -295,6 +369,9 @@ export default function App() {
 
   // Synchronized state for displayed collections per tile slot
   const [displayedCollections, setDisplayedCollections] = useState([]);
+  // Counter that increments only on directory switch (not on per-tile collection changes),
+  // so DesktopLayout's reset effect doesn't fire when a single tile changes its collection.
+  const [dirResetKey, setDirResetKey] = useState(0);
 
   // Track dragging offset positions for layout intersection checks
   const [draggedOffsets, setDraggedOffsets] = useState({});
@@ -313,7 +390,7 @@ export default function App() {
   }, []);
 
   // 1. Process, sort and map collections
-  const collections = React.useMemo(() => {
+  const collections = useMemo(() => {
     if (!rawCollections || rawCollections.length === 0) return [];
     
     const items = [...rawCollections];
@@ -347,44 +424,6 @@ export default function App() {
     
     return unique.map(item => item.name);
   }, [rawCollections, sortMethod, randomTrigger]);
-
-  // Fetch collections from API
-  const fetchCollections = async () => {
-    try {
-      // Only show loader if we have no cached collections to prevent full-screen spinner on refresh
-      if (rawCollections.length === 0) {
-        setIsLoading(true);
-      }
-      setFetchError('');
-      const data = await safeFetchJSON('/api/collections');
-      
-      const nextCollections = data.collections || [];
-      const nextScanDirectory = data.scanDirectory || '';
-      
-      setRawCollections(nextCollections);
-      setScanDirectory(nextScanDirectory);
-      setInputScanDir(nextScanDirectory);
-      
-      // Update local storage cache
-      try {
-        localStorage.setItem('blissfulFaradayCollectionsCache', JSON.stringify({
-          collections: nextCollections,
-          scanDirectory: nextScanDirectory
-        }));
-      } catch (err) {
-        console.warn('Failed to cache collections in localStorage:', err);
-      }
-    } catch (err) {
-      if (err.isStaticFallback) {
-        console.info('Backend scanner is unavailable. Using cached local collections (static hosting/offline mode).');
-      } else {
-        console.error('Failed to fetch collections:', err.message || err);
-        setFetchError(err.message);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   useEffect(() => {
     fetchCollections();
@@ -437,14 +476,16 @@ export default function App() {
       sortMethod,
       isAutoTiling,
       zoomScale,
-      isHUDpinned
+      isHUDpinned,
+      videoSpeed,
+      imageSort
     };
     try {
       localStorage.setItem('blissfulFaradayConfig', JSON.stringify(config));
     } catch (err) {
       console.warn('Failed to save config:', err);
     }
-  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, isSyncMode, sortMethod, isAutoTiling, zoomScale, isHUDpinned]);
+  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, isSyncMode, sortMethod, isAutoTiling, zoomScale, isHUDpinned, videoSpeed, imageSort]);
 
   // Get current grid config
   const gridConfig = GRID_PRESETS[tileCount] || GRID_PRESETS[1];
@@ -459,7 +500,7 @@ export default function App() {
 
   // Calculate tile positions - adaptive height based on aspect ratio
   // Width is determined by layout, then height is calculated from aspect ratio
-  const calculateTilePositions = React.useCallback((count, containerWidth, containerHeight) => {
+  const calculateTilePositions = useCallback((count, containerWidth, containerHeight) => {
     const positions = {};
     
     if (count === 0) return positions;
@@ -751,7 +792,7 @@ export default function App() {
   };
 
   // Active collections for display - matches exactly the active split screen count
-  const activeCollections = React.useMemo(() => {
+  const activeCollections = useMemo(() => {
     return collections.slice(0, tileCount || collections.length);
   }, [collections, tileCount]);
 
@@ -761,6 +802,13 @@ export default function App() {
   useEffect(() => {
     setDisplayedCollections(activeCollections);
   }, [activeCollections]);
+
+  // Reset tile state only when underlying collection data changes (new scan / dir change),
+  // NOT when tile count changes — otherwise existing tiles won't re-report ready
+  // and allTilesReady stays false forever, killing the sync timer.
+  useEffect(() => {
+    setDirResetKey(k => k + 1);
+  }, [collections]);
 
   // Handle folder change for a specific tile slot
   const handleCollectionChangeForTile = useCallback((tileId, newCollName) => {
@@ -772,10 +820,13 @@ export default function App() {
   }, []);
 
   // Get scaled positions for rendering
-  const scaledPositions = zoomScale !== 1 ? getScaledPositions() : tilePositions;
+  const scaledPositions = useMemo(() => {
+    if (zoomScale === 1) return tilePositions;
+    return getScaledPositions();
+  }, [zoomScale, tilePositions, tileAspectRatios, tileCount]);
 
   // Real positions of tiles incorporating drag offsets
-  const realTilePositions = React.useMemo(() => {
+  const realTilePositions = useMemo(() => {
     const positions = {};
     Object.entries(scaledPositions).forEach(([index, pos]) => {
       const offset = draggedOffsets[index] || { x: 0, y: 0 };
@@ -792,7 +843,7 @@ export default function App() {
   // Calculate overlapping tile IDs (2D rectangular collision detection)
   // To keep non-overlapping parts at 100% opacity, we only flag the upper-most overlapping element (id2)
   // as overlapping. The under-lapping element (id1) remains at 100% opacity.
-  const overlappingTiles = React.useMemo(() => {
+  const overlappingTiles = useMemo(() => {
     const overlapping = new Set();
     const keys = Object.keys(realTilePositions);
     for (let i = 0; i < keys.length; i++) {
@@ -819,7 +870,7 @@ export default function App() {
   }, [realTilePositions]);
 
   // Calculate detailed relative overlap intersections for each tile (with lower index tiles underneath it)
-  const tileIntersections = React.useMemo(() => {
+  const tileIntersections = useMemo(() => {
     const intersections = {};
     const keys = Object.keys(realTilePositions);
     
@@ -918,6 +969,7 @@ export default function App() {
         <MobileLayout
           collections={collections}
           displayedCollections={displayedCollections}
+          dirResetKey={dirResetKey}
           handleCollectionChangeForTile={handleCollectionChangeForTile}
           globalSpeed={globalSpeed}
           globalIsPlaying={globalIsPlaying}
@@ -970,6 +1022,12 @@ export default function App() {
           onRevokeSession={handleRevokeSession}
           onClearLogs={handleClearLogs}
           onLogout={handleLogout}
+          videoSpeed={videoSpeed}
+          setVideoSpeed={setVideoSpeed}
+          imageSort={imageSort}
+          setImageSort={setImageSort}
+          deletedAccounts={deletedAccounts}
+          onRestoreAccount={handleRestoreAccount}
         />
       </ErrorBoundary>
     );
@@ -980,6 +1038,7 @@ export default function App() {
       <DesktopLayout
       collections={collections}
       displayedCollections={displayedCollections}
+      dirResetKey={dirResetKey}
       scaledPositions={scaledPositions}
       tilePositions={tilePositions}
       handleCollectionChangeForTile={handleCollectionChangeForTile}
@@ -1042,6 +1101,12 @@ export default function App() {
       onRevokeSession={handleRevokeSession}
       onClearLogs={handleClearLogs}
       onLogout={handleLogout}
+      videoSpeed={videoSpeed}
+      setVideoSpeed={setVideoSpeed}
+      imageSort={imageSort}
+      setImageSort={setImageSort}
+      deletedAccounts={deletedAccounts}
+      onRestoreAccount={handleRestoreAccount}
     />
     </ErrorBoundary>
   );

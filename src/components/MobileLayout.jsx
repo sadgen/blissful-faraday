@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Play, Pause, Settings, Image as ImageIcon, ZoomIn, ZoomOut } from 'lucide-react';
 import MobileSlideshowCard from './MobileSlideshowCard';
 import ErrorBoundary from './ErrorBoundary';
@@ -98,6 +98,7 @@ function getMobileTileCoords(tileId, totalTiles, zoomScale) {
 export default function MobileLayout({
   collections,
   displayedCollections,
+  dirResetKey,
   handleCollectionChangeForTile,
   globalSpeed,
   globalIsPlaying,
@@ -151,9 +152,71 @@ export default function MobileLayout({
   onLogout,
   isSyncMode,
   setIsSyncMode,
+  videoSpeed,
+  setVideoSpeed,
+  imageSort,
+  setImageSort,
+  deletedAccounts = [],
+  onRestoreAccount,
 }) {
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+  const [showUnmanagedOnly, setShowUnmanagedOnly] = useState(false);
+  const [downloadList, setDownloadList] = useState([]);
   const [showZoomSlider, setShowZoomSlider] = useState(false);
   const sliderTimeoutRef = useRef(null);
+
+  // Remaining queue: tracks collections not yet shown this session (never repeats)
+  const remainingQueueRef = useRef([]);
+  const prevFilterKeyRef = useRef('');
+
+  const consumeNext = useCallback(() => {
+    if (remainingQueueRef.current.length > 0) {
+      const next = remainingQueueRef.current[0];
+      remainingQueueRef.current = remainingQueueRef.current.slice(1);
+      return next;
+    }
+    return null;
+  }, []);
+
+  const fetchDownloadList = React.useCallback(async () => {
+    try {
+      const res = await fetch('/api/download-list');
+      const data = await res.json();
+      if (data.list) setDownloadList(data.list);
+    } catch (err) {
+      console.error('Failed to fetch download list:', err);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchDownloadList();
+  }, [fetchDownloadList]);
+
+  React.useEffect(() => {
+    if (isSettingsOpen) fetchDownloadList();
+  }, [isSettingsOpen, fetchDownloadList]);
+
+  // Apply filters: favorites or unmanaged
+  const filteredCollections = React.useMemo(() => {
+    if (showFavoritesOnly) {
+      return downloadList.filter(c => collections.includes(c));
+    }
+    if (showUnmanagedOnly) {
+      return collections.filter(c =>
+        !downloadList.includes(c) && !(deletedAccounts || []).includes(c)
+      );
+    }
+    return displayedCollections;
+  }, [showFavoritesOnly, showUnmanagedOnly, downloadList, collections, displayedCollections, deletedAccounts]);
+
+  // Collections list to pass to tiles — filtered when a filter is active so getNextUniqueCollection only picks from valid items
+  const tileCollections = React.useMemo(() => {
+    if (showFavoritesOnly) return collections.filter(c => downloadList.includes(c));
+    if (showUnmanagedOnly) return collections.filter(c =>
+      !downloadList.includes(c) && !(deletedAccounts || []).includes(c)
+    );
+    return collections;
+  }, [showFavoritesOnly, showUnmanagedOnly, downloadList, collections, deletedAccounts]);
 
   const triggerZoomSliderBriefly = () => {
     setShowZoomSlider(true);
@@ -189,7 +252,9 @@ export default function MobileLayout({
     const tick = () => {
       setSyncTrigger(prev => prev + 1);
       const elapsed = Date.now() - targetTime;
-      const nextDelay = Math.max(0, globalSpeed - elapsed);
+      // Clamp minimum delay to 16ms (1 frame): if a tick ran late,
+      // nextDelay=0 would spin a busy loop that starves rendering.
+      const nextDelay = Math.max(16, globalSpeed - elapsed);
       targetTime += globalSpeed;
       syncTimerRef.current = setTimeout(tick, nextDelay);
     };
@@ -252,8 +317,17 @@ export default function MobileLayout({
     return intersections;
   }, [activeTileCount, zoomScale]);
 
-  // Filter collections to display based on active tile count
-  const renderCollections = displayedCollections.slice(0, activeTileCount);
+  // Filter collections to display based on active tile count and favorites filter
+  const renderCollections = filteredCollections.slice(0, activeTileCount);
+
+  // Initialize/reset remaining queue when filter/collections/sort change
+  React.useEffect(() => {
+    const filterKey = `${showFavoritesOnly}:${showUnmanagedOnly}:${collections.length}:${sortMethod}:${dirResetKey}:${activeTileCount}`;
+    if (filterKey !== prevFilterKeyRef.current) {
+      prevFilterKeyRef.current = filterKey;
+      remainingQueueRef.current = filteredCollections.slice(activeTileCount);
+    }
+  }, [showFavoritesOnly, showUnmanagedOnly, collections, sortMethod, dirResetKey, activeTileCount, filteredCollections]);
 
   // Responsive class for active tile counts
   let gridClass = 'mobile-grid-2';
@@ -326,8 +400,8 @@ export default function MobileLayout({
                 <ErrorBoundary key={index} fallbackLabel="该窗口出现异常">
                   <MobileSlideshowCard
                     tileId={index}
-                    collections={collections}
-                    displayedCollections={displayedCollections}
+                    collections={tileCollections}
+                    displayedCollections={filteredCollections}
                     onCollectionChange={handleCollectionChangeForTile}
                     initialCollectionName={collName}
                     globalSpeed={globalSpeed}
@@ -347,6 +421,11 @@ export default function MobileLayout({
                     }}
                     isSyncMode={isSyncMode}
                     syncTrigger={syncTrigger}
+                    videoSpeed={videoSpeed}
+                    imageSort={imageSort}
+                    downloadList={downloadList}
+                    fetchCollections={fetchCollections}
+                    onRequestNextCollection={consumeNext}
                   />
                 </ErrorBoundary>
               ))}
@@ -440,6 +519,18 @@ export default function MobileLayout({
         onLogout={onLogout}
         isSyncMode={isSyncMode}
         setIsSyncMode={setIsSyncMode}
+        deletedAccounts={deletedAccounts}
+        onRestoreAccount={onRestoreAccount}
+        videoSpeed={videoSpeed}
+        setVideoSpeed={setVideoSpeed}
+        imageSort={imageSort}
+        setImageSort={setImageSort}
+        showFavoritesOnly={showFavoritesOnly}
+        setShowFavoritesOnly={setShowFavoritesOnly}
+        showUnmanagedOnly={showUnmanagedOnly}
+        setShowUnmanagedOnly={setShowUnmanagedOnly}
+        downloadList={downloadList}
+        fetchDownloadList={fetchDownloadList}
       />
 
       {/* 5. Floating Vertical Zoom Slider on Right Screen Edge */}

@@ -29,7 +29,15 @@ export default function ControlHUD({
   onZoomOut,
   zoomSliderRef,
   isHUDpinned,
-  setIsHUDpinned
+  setIsHUDpinned,
+  videoSpeed,
+  setVideoSpeed,
+  imageSort,
+  setImageSort,
+  showFavoritesOnly,
+  setShowFavoritesOnly,
+  showUnmanagedOnly,
+  setShowUnmanagedOnly,
 }) {
   const [isHovered, setIsHovered] = useState(false);
 
@@ -231,15 +239,43 @@ export default function ControlHUD({
               >
                 <span>{method.label}</span>
                 {method.id === 'random' && sortMethod === 'random' && (
-                  <Shuffle 
-                    size={9} 
+                  <Shuffle
+                    size={9}
                     style={{
                       transition: 'transform 0.3s ease'
-                    }} 
+                    }}
                   />
                 )}
               </button>
             ))}
+          </div>
+          {/* Internal image sort */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+            <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>内部:</span>
+            <div style={{ display: 'flex', gap: 2, background: 'rgba(0,0,0,0.15)', padding: '1px', borderRadius: '4px' }}>
+              {[
+                { id: 'name', label: '名称' },
+                { id: 'date', label: '时间' },
+              ].map(method => (
+                <button
+                  key={method.id}
+                  onClick={() => setImageSort(method.id)}
+                  style={{
+                    background: imageSort === method.id ? 'var(--accent-purple)' : 'transparent',
+                    border: 'none',
+                    color: imageSort === method.id ? '#fff' : 'var(--text-secondary)',
+                    fontSize: '0.55rem',
+                    padding: '1px 6px',
+                    borderRadius: '3px',
+                    cursor: 'pointer',
+                    fontWeight: imageSort === method.id ? 'bold' : 'normal',
+                    transition: 'var(--transition-smooth)',
+                  }}
+                >
+                  {method.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -296,6 +332,85 @@ export default function ControlHUD({
             }}
           >
             {Math.round(zoomScale * 100)}%
+          </button>
+        </div>
+
+        {/* Video Speed Control */}
+        <div className="hud-section hud-section-compact">
+          <span className="hud-label" style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', fontSize: '0.65rem' }}>
+            🎬 视频
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', minWidth: '32px', textAlign: 'right' }}>
+              {videoSpeed.toFixed(1)}x
+            </span>
+            <input
+              type="range"
+              min="1"
+              max="5"
+              step="0.5"
+              value={videoSpeed}
+              onChange={(e) => setVideoSpeed(parseFloat(e.target.value))}
+              className="glass-slider"
+              style={{ width: '80px', height: '4px', cursor: 'pointer' }}
+            />
+          </div>
+        </div>
+
+        {/* Favorites & Unmanaged Filter Toggles */}
+        <div className="hud-section hud-section-compact" style={{ gap: 3 }}>
+          <button
+            onClick={() => {
+              setShowFavoritesOnly(!showFavoritesOnly);
+              if (!showFavoritesOnly) setShowUnmanagedOnly(false);
+            }}
+            style={{
+              background: showFavoritesOnly ? 'rgba(251, 191, 36, 0.15)' : 'transparent',
+              border: showFavoritesOnly ? '1px solid rgba(251, 191, 36, 0.3)' : '1px solid transparent',
+              color: showFavoritesOnly ? '#fbbf24' : 'var(--text-muted)',
+              padding: '4px 8px',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 3,
+              fontSize: '0.65rem',
+              whiteSpace: 'nowrap',
+              transition: 'all 0.2s'
+            }}
+            title={showFavoritesOnly ? '显示所有图集' : '仅显示每日下载列表中的账号'}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill={showFavoritesOnly ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+            </svg>
+            <span>{showFavoritesOnly ? '全部' : '最爱'}</span>
+          </button>
+          <button
+            onClick={() => {
+              setShowUnmanagedOnly(!showUnmanagedOnly);
+              if (!showUnmanagedOnly) setShowFavoritesOnly(false);
+            }}
+            style={{
+              background: showUnmanagedOnly ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+              border: showUnmanagedOnly ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid transparent',
+              color: showUnmanagedOnly ? '#818cf8' : 'var(--text-muted)',
+              padding: '4px 8px',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 3,
+              fontSize: '0.65rem',
+              whiteSpace: 'nowrap',
+              transition: 'all 0.2s'
+            }}
+            title={showUnmanagedOnly ? '显示所有图集' : '仅显示未管理的账号'}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill={showUnmanagedOnly ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="8" r="4" />
+              <path d="M20 21a8 8 0 1 0-16 0" />
+            </svg>
+            <span>{showUnmanagedOnly ? '全部' : '未管理'}</span>
           </button>
         </div>
 

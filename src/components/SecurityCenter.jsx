@@ -164,8 +164,8 @@ export default function SecurityCenter({
       return;
     }
 
-    if (newPassword.length < 4) {
-      setPwdError('新密码长度不能少于 4 位');
+    if (newPassword.length < 8) {
+      setPwdError('新密码长度不能少于 8 位');
       return;
     }
 
@@ -293,7 +293,7 @@ export default function SecurityCenter({
               className="glass-input"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="新访问密码 (不少于4位)"
+              placeholder="新访问密码 (不少于8位)"
               style={{ width: '100%', fontSize: '0.75rem', padding: '6px 10px' }}
               required
             />

@@ -21,14 +21,11 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
-    
-    <!-- Register Service Worker for PWA full screen -->
+    <!-- Cleanup: unregister any stale Service Worker from previous production build -->
     <script>
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then(reg => console.log('Service Worker registered with scope:', reg.scope))
-            .catch(err => console.error('Service Worker registration failed:', err));
+        navigator.serviceWorker.getRegistrations().then(regs => {
+          regs.forEach(reg => reg.unregister());
         });
       }
     </script>

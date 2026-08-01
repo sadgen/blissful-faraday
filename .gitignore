@@ -16,6 +16,8 @@ Thumbs.db
 
 # Auth config (auto-generated, contains password hash & session tokens)
 .auth-config.json
+.scan-directory.json
+.collection-cache.json
 
 # User resources (ignore all sub-folders of resources, preserving the resources folder itself)
 resources/

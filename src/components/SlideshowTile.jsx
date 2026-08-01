@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Play, Pause, ChevronRight, ChevronLeft,
-  Maximize2, Minimize2, Settings, Shuffle, HelpCircle
+  Maximize2, Minimize2, Settings, Shuffle, HelpCircle, Trash2
 } from 'lucide-react';
 import useImagePreloader from '../hooks/useImagePreloader';
 import useSlideshowPlayback from '../hooks/useSlideshowPlayback';
@@ -13,6 +13,8 @@ export default function SlideshowTile({
   displayedCollections,
   onCollectionChange,
   initialCollectionName,
+  onTileReady,
+  batchLoadIdx,
   globalSpeed,
   globalIsPlaying,
   globalRefreshTrigger,
@@ -26,28 +28,105 @@ export default function SlideshowTile({
   intersections = [],
   isSyncMode,
   syncTrigger,
+  videoSpeed,
+  imageSort,
+  fetchCollections,
+  onRequestNextCollection,
+  downloadList = [],
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [isMaximized, setIsMaximized] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
+
+  // Collection info (Instagram username + full_name)
+  const [collectionInfo, setCollectionInfo] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isFavorite, setIsFavorite] = useState(false);
+  const [favLoading, setFavLoading] = useState(false);
+
+  useEffect(() => {
+    if (!currentCollName) {
+      setCollectionInfo(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/collection/info?collection=${encodeURIComponent(currentCollName)}`)
+      .then(res => res.json())
+      .then(data => {
+        if (!cancelled) setCollectionInfo(data);
+      })
+      .catch(() => {
+        if (!cancelled) setCollectionInfo(null);
+      });
+    return () => { cancelled = true; };
+  }, [currentCollName]);
+
+  // Check if current collection is in daily download list (P1: use parent-fetched list, no per-tile fetch)
+  useEffect(() => {
+    setIsFavorite(downloadList.includes(currentCollName));
+  }, [downloadList, currentCollName]);
+
+  const toggleFavorite = useCallback(async () => {
+    if (favLoading) return;
+    setFavLoading(true);
+    try {
+      const endpoint = isFavorite ? '/api/download-list/remove' : '/api/download-list/add';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: currentCollName })
+      });
+      const data = await res.json();
+      if (data.success) setIsFavorite(!isFavorite);
+    } catch (err) {
+      console.error('Failed to toggle favorite:', err);
+    } finally {
+      setFavLoading(false);
+    }
+  }, [currentCollName, isFavorite, favLoading]);
+
+  const handleDelete = async () => {
+    if (!window.confirm(`确定要删除图集 "${currentCollName}" 吗？\n\n这将永久删除该文件夹及其所有图片。`)) return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`/api/collection/delete?collection=${encodeURIComponent(currentCollName)}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || '删除失败');
+      }
+      if (fetchCollections) {
+        await fetchCollections();
+      }
+    } catch (err) {
+      alert(`删除失败: ${err.message}`);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Refs needed by both hooks
   const currentCollNameRef = useRef(currentCollName);
   const collectionsRef = useRef(collections);
   const displayedCollectionsRef = useRef(displayedCollections);
   const sortMethodRef = useRef(sortMethod);
-
+  const hasReportedReadyRef = useRef(false);
   useEffect(() => { currentCollNameRef.current = currentCollName; }, [currentCollName]);
   useEffect(() => { collectionsRef.current = collections; }, [collections]);
   useEffect(() => { displayedCollectionsRef.current = displayedCollections; }, [displayedCollections]);
   useEffect(() => { sortMethodRef.current = sortMethod; }, [sortMethod]);
 
+  // Reset ready flag when switching to a new collection
+  useEffect(() => {
+    hasReportedReadyRef.current = false;
+  }, [currentCollName]);
+
   // --- Hook 1: Image Preloader ---
   const {
     images, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
     isLoadingImages, loadError,
-    imagesRef, shouldStartFromLastRef,
+    imagesRef, activeIdxRef, shouldStartFromLastRef,
     preloadAndAdvance,
+    videoFileNames,
   } = useImagePreloader({
     currentCollName,
     setCurrentCollName,
@@ -56,6 +135,7 @@ export default function SlideshowTile({
     onCollectionChange,
     onAspectRatioChange,
     collections,
+    imageSort,
   });
 
   // --- Hook 2: Playback ---
@@ -69,6 +149,7 @@ export default function SlideshowTile({
     advanceSlide, handleWheel,
     skipToNextCollection, selectRandomCollection,
     handleCollectionChange,
+    isCurrentVideo,
   } = useSlideshowPlayback({
     tileId,
     collections,
@@ -84,6 +165,7 @@ export default function SlideshowTile({
     initialCollectionName,
     currentCollName, setCurrentCollName,
     imagesRef,
+    activeIdxRef,
     currentCollNameRef,
     collectionsRef,
     displayedCollectionsRef,
@@ -93,6 +175,7 @@ export default function SlideshowTile({
     shouldStartFromLastRef,
     isSyncMode,
     syncTrigger,
+    onRequestNextCollection,
   });
 
   // --- Hook 3: Tile Drag ---
@@ -110,6 +193,18 @@ export default function SlideshowTile({
     initialCollectionName,
     totalTiles,
   });
+
+  // Report ready when loading finishes (success, error, or empty).
+  // This must fire even when tile is behind batch loading threshold (showing placeholder)
+  // because in that case onLoad / onLoadedMetadata callbacks never run.
+  useEffect(() => {
+    if (!isLoadingImages) {
+      if (!hasReportedReadyRef.current && onTileReady) {
+        hasReportedReadyRef.current = true;
+        onTileReady(tileId);
+      }
+    }
+  }, [isLoadingImages, onTileReady, tileId]);
 
   // --- ResizeObserver for parent size ---
   const tileRef = useRef(null);
@@ -169,6 +264,28 @@ export default function SlideshowTile({
     );
   }
 
+  // Batch loading: show placeholder while tile is waiting its turn to load images
+  if (tileId >= batchLoadIdx) {
+    return (
+      <div className="slideshow-tile" style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          width: '100%', height: '100%', gap: 10,
+          background: 'radial-gradient(ellipse at center, rgba(139, 92, 246, 0.03) 0%, transparent 70%)'
+        }}>
+          <div style={{
+            width: 20, height: 20,
+            border: '2px solid rgba(139, 92, 246, 0.15)',
+            borderTopColor: 'var(--accent-purple)',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite'
+          }} />
+          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>正在加载...</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       ref={tileRef}
@@ -215,19 +332,49 @@ export default function SlideshowTile({
             const isActive = index === activeIdx;
             const isOutgoing = index === outgoingIdx;
             if (!isActive && !isOutgoing) return null;
+            const isVideo = videoFileNames.has(imgName);
+            const isOnlyVideo = isVideo && images.length === 1;
+
             return (
               <div
                 key={imgName}
                 className={`slide-image-container ${isActive ? 'active' : ''} ${isOutgoing ? 'outgoing' : ''}`}
               >
-                <img
-                  src={getImageUrl(imgName)}
-                  alt={imgName}
-                  loading="lazy"
-                  decoding="async"
-                  draggable="false"
-                  className="slide-image-main"
-                />
+                {isVideo ? (
+                  isActive ? (
+                    <video
+                      ref={el => { if (el) { el.playbackRate = videoSpeed; } }}
+                      src={getImageUrl(imgName)}
+                      muted
+                      autoPlay
+                      playsInline
+                      loop={isOnlyVideo}
+                      onEnded={() => advanceSlide(1)}
+                      onLoadedMetadata={(e) => {
+                        e.target.playbackRate = videoSpeed;
+                        if (!hasReportedReadyRef.current && onTileReady) {
+                          hasReportedReadyRef.current = true;
+                          onTileReady(tileId);
+                        }
+                      }}
+                      className="slide-image-main"
+                    />
+                  ) : null
+                ) : (
+                  <img
+                    src={getImageUrl(imgName)}
+                    alt={imgName}
+                    decoding="async"
+                    draggable="false"
+                    className="slide-image-main"
+                    onLoad={() => {
+                      if (!hasReportedReadyRef.current && onTileReady) {
+                        hasReportedReadyRef.current = true;
+                        onTileReady(tileId);
+                      }
+                    }}
+                  />
+                )}
               </div>
             );
           })
@@ -246,12 +393,45 @@ export default function SlideshowTile({
       <div className="tile-overlay">
         {/* Header */}
         <div className="tile-header">
-          <div className="tile-title">
-            <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: isPlaying ? '#10b981' : '#f59e0b' }} />
-            <span>{currentCollName || '选择图片集'}</span>
-            <span style={{ opacity: 0.6, fontSize: '0.75rem' }}>({activeIdx + 1}/{images.length})</span>
+          <div className="tile-title" style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: isPlaying ? '#10b981' : '#f59e0b', flexShrink: 0 }} />
+            <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.2 }}>
+              <span style={{ fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                @{collectionInfo?.username || currentCollName || '选择图片集'}
+              </span>
+              {collectionInfo?.full_name && (
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {collectionInfo.full_name}
+                </span>
+              )}
+            </div>
+            <span style={{ opacity: 0.6, fontSize: '0.75rem', flexShrink: 0 }}>({activeIdx + 1}/{images.length})</span>
           </div>
           <div className="tile-controls-group">
+            {!isMaximized && (
+              <button
+                className="tile-mini-btn"
+                onClick={toggleFavorite}
+                disabled={favLoading}
+                title={isFavorite ? '从每日下载列表中移除' : '加入每日下载列表'}
+                style={{ color: isFavorite ? '#fbbf24' : 'var(--text-muted)', opacity: favLoading ? 0.5 : 1 }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill={isFavorite ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                </svg>
+              </button>
+            )}
+            {!isMaximized && (
+              <button
+                className="tile-mini-btn"
+                onClick={handleDelete}
+                disabled={isDeleting}
+                title="删除此图集"
+                style={{ color: isDeleting ? 'var(--text-muted)' : '#ef4444' }}
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
             <button className="tile-mini-btn" onClick={() => setShowConfig(!showConfig)} title="本窗口设置">
               <Settings size={14} style={{ transform: showConfig ? 'rotate(45deg)' : 'none', transition: 'transform 0.3s' }} />
             </button>
@@ -341,8 +521,9 @@ export default function SlideshowTile({
               <ChevronRight size={16} />
             </button>
           </div>
-          <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', background: 'rgba(0,0,0,0.5)', padding: '2px 8px', borderRadius: '10px' }}>
-            {localSpeedMult !== 1 ? `${localSpeedMult}x 速度` : '正常速度'}
+          <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', background: 'rgba(0,0,0,0.5)', padding: '2px 8px', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: 4 }}>
+            {isCurrentVideo && <span>🎬</span>}
+            <span>{localSpeedMult !== 1 ? `${localSpeedMult}x 速度` : '正常速度'}</span>
           </div>
         </div>
       </div>

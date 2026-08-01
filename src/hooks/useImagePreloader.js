@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { isVideoFile, getImageDimensions } from '../utils/imageHelpers';
 
 const PRELOAD_COUNT = 5;
+const OUTGOING_CLEAR_DELAY = 1500;
 
 function setCacheLRU(map, cacheKey, value) {
   if (map.has(cacheKey)) map.delete(cacheKey);
@@ -11,56 +13,6 @@ function setCacheLRU(map, cacheKey, value) {
   }
 }
 
-// Parse image dimensions from buffer without full decode
-function getImageDimensions(buffer) {
-  const bytes = new Uint8Array(buffer);
-
-  // JPEG (FF D8)
-  if (bytes[0] === 0xFF && bytes[1] === 0xD8) {
-    let offset = 2;
-    while (offset < bytes.length) {
-      if (bytes[offset] !== 0xFF) break;
-      const marker = bytes[offset + 1];
-      if ((marker >= 0xC0 && marker <= 0xC3) ||
-          (marker >= 0xC5 && marker <= 0xC7) ||
-          (marker >= 0xC9 && marker <= 0xCB) ||
-          (marker >= 0xCD && marker <= 0xCF)) {
-        const height = (bytes[offset + 5] << 8) | bytes[offset + 6];
-        const width = (bytes[offset + 7] << 8) | bytes[offset + 8];
-        if (width > 0 && height > 0) return { width, height };
-      }
-      const length = (bytes[offset + 2] << 8) | bytes[offset + 3];
-      offset += 2 + length;
-      if (length < 2 || offset >= bytes.length) break;
-    }
-  }
-
-  // PNG (89 50 4E 47)
-  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) {
-    const width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
-    const height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
-    if (width > 0 && height > 0) return { width, height };
-  }
-
-  // GIF (47 49 46 38)
-  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
-    const width = bytes[6] | (bytes[7] << 8);
-    const height = bytes[8] | (bytes[9] << 8);
-    if (width > 0 && height > 0) return { width, height };
-  }
-
-  // WebP (52 49 46 46 ... 57 42 50)
-  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
-    if (bytes[11] === 0x57 && bytes[12] === 0x42 && bytes[13] === 0x50) {
-      const width = bytes[26] | (bytes[27] << 8) | ((bytes[28] & 0x7F) << 16);
-      const height = bytes[28] | (bytes[29] << 8) | ((bytes[30] & 0x7F) << 16);
-      if (width > 0 && height > 0) return { width, height };
-    }
-  }
-
-  return null;
-}
-
 export default function useImagePreloader({
   currentCollName,
   setCurrentCollName,
@@ -69,6 +21,7 @@ export default function useImagePreloader({
   onCollectionChange,
   onAspectRatioChange,
   collections,
+  imageSort = 'name',
 }) {
   const [images, setImages] = useState([]);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -81,6 +34,24 @@ export default function useImagePreloader({
   const activeIdxRef = useRef(activeIdx);
   const imagesRef = useRef(images);
   const shouldStartFromLastRef = useRef(false);
+  // C4: separate controllers — directory switch vs slide advance must not abort each other
+  const abortImagesRef = useRef(null);   // /api/collection/images (directory switch)
+  const abortPreloadRef = useRef(null);  // /api/image range fetch (slide advance)
+  // C3: unified cleanup for outgoingIdx timers (unmount-safe)
+  const outgoingTimerRef = useRef(null);
+  const clearOutgoingTimer = useCallback(() => {
+    if (outgoingTimerRef.current) {
+      clearTimeout(outgoingTimerRef.current);
+      outgoingTimerRef.current = null;
+    }
+  }, []);
+  const scheduleOutgoingClear = useCallback(() => {
+    clearOutgoingTimer();
+    outgoingTimerRef.current = setTimeout(() => setOutgoingIdx(null), OUTGOING_CLEAR_DELAY);
+  }, [clearOutgoingTimer]);
+
+  // C3: clear any pending timer on unmount / collection change
+  useEffect(() => clearOutgoingTimer, [clearOutgoingTimer]);
 
   // Sync refs
   useEffect(() => { activeIdxRef.current = activeIdx; }, [activeIdx]);
@@ -100,27 +71,72 @@ export default function useImagePreloader({
     }
   }, [initialCollectionName, setCurrentCollName]);
 
-  // Detect aspect ratio of first image
+  // Detect aspect ratio of images/videos
   useEffect(() => {
     if (images.length > 0 && activeIdx >= 0 && activeIdx < images.length) {
-      const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(images[activeIdx])}`;
-      fetch(imgUrl, {
-        method: 'GET',
-        headers: { 'Range': 'bytes=0-65535' }
-      })
-        .then(response => {
-          if (!response.ok) throw new Error('Fetch failed');
-          return response.arrayBuffer();
+      const fileName = images[activeIdx];
+      const isVideo = isVideoFile(fileName);
+      // P2: reuse cached aspectRatio from preloadCacheRef — skip the range fetch entirely
+      const cacheKey = `${currentCollName}:${fileName}`;
+      const cached = preloadCacheRef.current.get(cacheKey);
+      if (cached && cached.aspectRatio) {
+        setTileAspectRatio(cached.aspectRatio);
+        return;
+      }
+      const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(fileName)}`;
+
+      if (isVideo) {
+        // For videos: try header parse first, fall back to <video> element or 16:9
+        fetch(imgUrl, {
+          method: 'GET',
+          headers: { 'Range': 'bytes=0-65535' }
         })
-        .then(buffer => {
-          const dimensions = getImageDimensions(buffer);
-          if (dimensions) setTileAspectRatio(dimensions.width / dimensions.height);
+          .then(response => {
+            if (!response.ok) throw new Error('Fetch failed');
+            return response.arrayBuffer();
+          })
+          .then(buffer => {
+            const dimensions = getImageDimensions(buffer);
+            if (dimensions) {
+              setTileAspectRatio(dimensions.width / dimensions.height);
+            } else {
+              // Fallback: create a hidden video element to detect dimensions
+              const video = document.createElement('video');
+              video.muted = true;
+              video.preload = 'metadata';
+              video.onloadedmetadata = () => {
+                const ratio = video.videoWidth / video.videoHeight;
+                if (ratio > 0) setTileAspectRatio(ratio);
+                video.remove();
+              };
+              video.onerror = () => { video.remove(); };
+              video.src = imgUrl;
+            }
+          })
+          .catch(() => {
+            // Last resort: assume vertical (IG is mostly portrait)
+            setTileAspectRatio(9 / 16);
+          });
+      } else {
+        // Images: use existing logic
+        fetch(imgUrl, {
+          method: 'GET',
+          headers: { 'Range': 'bytes=0-65535' }
         })
-        .catch(() => {
-          const img = new Image();
-          img.onload = () => setTileAspectRatio(img.width / img.height);
-          img.src = imgUrl;
-        });
+          .then(response => {
+            if (!response.ok) throw new Error('Fetch failed');
+            return response.arrayBuffer();
+          })
+          .then(buffer => {
+            const dimensions = getImageDimensions(buffer);
+            if (dimensions) setTileAspectRatio(dimensions.width / dimensions.height);
+          })
+          .catch(() => {
+            const img = new Image();
+            img.onload = () => setTileAspectRatio(img.width / img.height);
+            img.src = imgUrl;
+          });
+      }
     }
   }, [activeIdx, currentCollName, images.length]);
 
@@ -136,7 +152,10 @@ export default function useImagePreloader({
       try {
         setIsLoadingImages(true);
         setLoadError('');
-        const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}`);
+        if (abortImagesRef.current) abortImagesRef.current.abort();
+        const controller = new AbortController();
+        abortImagesRef.current = controller;
+        const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}&sort=${imageSort}`, { signal: controller.signal });
         if (!res.ok) throw new Error(`加载目录失败: ${res.statusText}`);
         const contentType = res.headers.get('content-type');
         if (!contentType || !contentType.includes('application/json')) {
@@ -147,10 +166,11 @@ export default function useImagePreloader({
         const newImages = data.images || [];
 
         // Preload first image before switching (prevents black flash)
+        // Skip Image() preload for videos — they can't be preloaded via new Image()
         if (newImages.length > 0) {
-          const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(newImages[0])}`;
-          const preloadImg = new Image();
-          preloadImg.onload = () => {
+          const firstIsVideo = isVideoFile(newImages[0]);
+
+          const applyImages = () => {
             setImages(newImages);
             let startIdx = 0;
             if (shouldStartFromLastRef.current && newImages.length > 0) {
@@ -160,22 +180,18 @@ export default function useImagePreloader({
             setActiveIdx(startIdx);
             setOutgoingIdx(null);
             setIsLoadingImages(false);
-            setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1500);
+            preloadImages(startIdx + 1, PRELOAD_COUNT);
           };
-          preloadImg.onerror = () => {
-            // Fallback: switch anyway even if preload fails
-            setImages(newImages);
-            let startIdx = 0;
-            if (shouldStartFromLastRef.current && newImages.length > 0) {
-              startIdx = newImages.length - 1;
-              shouldStartFromLastRef.current = false;
-            }
-            setActiveIdx(startIdx);
-            setOutgoingIdx(null);
-            setIsLoadingImages(false);
-            setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1500);
-          };
-          preloadImg.src = imgUrl;
+
+          if (firstIsVideo) {
+            applyImages();
+          } else {
+            const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(newImages[0])}`;
+            const preloadImg = new Image();
+            preloadImg.onload = applyImages;
+            preloadImg.onerror = applyImages;
+            preloadImg.src = imgUrl;
+          }
         } else {
           setImages([]);
           setActiveIdx(0);
@@ -183,12 +199,17 @@ export default function useImagePreloader({
           setIsLoadingImages(false);
         }
       } catch (err) {
+        if (err.name === 'AbortError') return; // 正常中断，不污染 loadError
         console.error(err);
         setLoadError(err.message);
         setIsLoadingImages(false);
       }
     };
     fetchImages();
+
+    return () => {
+      if (abortImagesRef.current) abortImagesRef.current.abort();
+    };
   }, [currentCollName]);
 
   // Preload images ahead of time
@@ -199,6 +220,8 @@ export default function useImagePreloader({
     for (let i = 0; i < count; i++) {
       const idx = (startIdx + i) % currentImages.length;
       const imgName = currentImages[idx];
+      // Skip video files — they can't be preloaded via new Image()
+      if (isVideoFile(imgName)) continue;
       const cacheKey = `${currentCollName}:${imgName}`;
       if (cache.has(cacheKey)) continue;
       const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(imgName)}`;
@@ -218,6 +241,16 @@ export default function useImagePreloader({
   const preloadAndAdvance = useCallback((nextIdx, collName, outgoingIdx) => {
     const imgName = imagesRef.current[nextIdx];
     if (!imgName) return;
+
+    // For video files: skip image preloading, just switch immediately
+    if (isVideoFile(imgName)) {
+      if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
+      setActiveIdx(nextIdx);
+      scheduleOutgoingClear();
+      preloadImages(nextIdx + 1, PRELOAD_COUNT);
+      return;
+    }
+
     const cacheKey = `${collName}:${imgName}`;
     const cached = preloadCacheRef.current.get(cacheKey);
 
@@ -227,15 +260,19 @@ export default function useImagePreloader({
       setTileAspectRatio(cached.aspectRatio || (cached.img.width / cached.img.height));
       if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
-      setTimeout(() => setOutgoingIdx(null), 1500);
+      scheduleOutgoingClear();
       preloadImages(nextIdx + 1, PRELOAD_COUNT);
       return;
     }
 
     const imgUrl = `/api/image?collection=${encodeURIComponent(collName)}&name=${encodeURIComponent(imgName)}`;
+    if (abortPreloadRef.current) abortPreloadRef.current.abort();
+    const controller = new AbortController();
+    abortPreloadRef.current = controller;
     fetch(imgUrl, {
       method: 'GET',
-      headers: { 'Range': 'bytes=0-65535' }
+      headers: { 'Range': 'bytes=0-65535' },
+      signal: controller.signal
     })
       .then(response => {
         if (!response.ok) throw new Error('Fetch failed');
@@ -252,7 +289,7 @@ export default function useImagePreloader({
           setTileAspectRatio(finalAspectRatio);
           if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
           setActiveIdx(nextIdx);
-          setTimeout(() => setOutgoingIdx(null), 1500);
+          scheduleOutgoingClear();
           preloadImages(nextIdx + 1, PRELOAD_COUNT);
         };
         img.src = imgUrl;
@@ -265,17 +302,21 @@ export default function useImagePreloader({
           setTileAspectRatio(finalAspectRatio);
           if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
           setActiveIdx(nextIdx);
-          setTimeout(() => setOutgoingIdx(null), 1500);
+          scheduleOutgoingClear();
           preloadImages(nextIdx + 1, PRELOAD_COUNT);
         };
         img.src = imgUrl;
       });
-  }, [preloadImages]);
+  }, [preloadImages, scheduleOutgoingClear]);
+
+  // Build video file names set for the current collection
+  const videoFileNames = new Set(images.filter(isVideoFile));
 
   return {
     images, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
     isLoadingImages, loadError, tileAspectRatio,
     imagesRef, activeIdxRef, shouldStartFromLastRef,
     preloadAndAdvance, preloadImages, getImageDimensions, preloadCacheRef,
+    videoFileNames, scheduleOutgoingClear,
   };
 }

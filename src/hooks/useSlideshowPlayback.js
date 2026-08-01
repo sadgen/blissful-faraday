@@ -18,6 +18,7 @@ export default function useSlideshowPlayback({
   currentCollName,
   setCurrentCollName,
   imagesRef,
+  activeIdxRef,
   currentCollNameRef,
   collectionsRef,
   displayedCollectionsRef,
@@ -28,6 +29,7 @@ export default function useSlideshowPlayback({
   shouldStartFromLastRef,
   isSyncMode,
   syncTrigger,
+  onRequestNextCollection,
 }) {
   const [localIsPlaying, setLocalIsPlaying] = useState(true);
   const [localSpeedMult, setLocalSpeedMult] = useState(1);
@@ -41,11 +43,19 @@ export default function useSlideshowPlayback({
   const staggerAppliedRef = useRef(false);
   const lastWheelTimeRef = useRef(0);
   const wheelPauseTimeoutRef = useRef(null);
+  const prevSyncTriggerRef = useRef(syncTrigger);
 
   const transitionEffect = localTransitionEffect || globalTransitionEffect || 'none';
 
+  // Detect if current slide is a video
+  const isCurrentVideo = images.length > 0 && activeIdx >= 0 && activeIdx < images.length
+    ? /\.(mp4|webm)$/i.test(images[activeIdx] || '')
+    : false;
+
+  // If current slide is a video, don't auto-advance (video onended drives it)
+  // If it's a video and only one slide, allow loop playback
   const duration = globalSpeed / localSpeedMult;
-  const isPlaying = globalIsPlaying && localIsPlaying && !isWheelPaused && images.length > 1;
+  const isPlaying = globalIsPlaying && localIsPlaying && !isWheelPaused && images.length > 1 && !isCurrentVideo;
 
   const resetProgressBar = useCallback(() => {
     setProgressBarReset(true);
@@ -103,7 +113,9 @@ export default function useSlideshowPlayback({
       for (let i = 1; i <= allColls.length; i++) {
         const nextIdx = (currentIdx + i * direction + allColls.length * i) % allColls.length;
         const candidate = allColls[nextIdx];
-        if (!otherDisplayedColls.includes(candidate)) return candidate;
+        if (!otherDisplayedColls.includes(candidate) && candidate !== currentCollNameVal) {
+          return candidate;
+        }
       }
       return allColls[(currentIdx + direction + allColls.length) % allColls.length];
     }
@@ -116,16 +128,26 @@ export default function useSlideshowPlayback({
     const currentImages = imagesRef.current;
     if (currentImages.length === 0) return;
 
-    const currentIdx = activeIdx;
+    const currentIdx = activeIdxRef.current;
 
     const nextIdx = currentIdx + direction;
     const currentCollNameVal = currentCollNameRef.current;
 
     // Reached end of collection -> cycle to next
     if (nextIdx >= currentImages.length) {
-      const nextCollName = getNextUniqueCollection(1);
+      // Try session-level remaining queue first
+      let nextCollName = onRequestNextCollection ? onRequestNextCollection() : null;
+      if (nextCollName === null || nextCollName === undefined) {
+        nextCollName = getNextUniqueCollection(1);
+      }
       setCurrentCollName(nextCollName);
-      if (onCollectionChange) onCollectionChange(tileId, nextCollName);
+      if (onCollectionChange) {
+        onCollectionChange(tileId, nextCollName);
+        if (displayedCollectionsRef.current) {
+          displayedCollectionsRef.current = [...displayedCollectionsRef.current];
+          displayedCollectionsRef.current[tileId] = nextCollName;
+        }
+      }
       setActiveIdx(0);
       setOutgoingIdx(null);
       return;
@@ -133,10 +155,19 @@ export default function useSlideshowPlayback({
 
     // Reached start of collection (going backward) -> cycle to previous
     if (nextIdx < 0) {
-      const nextCollName = getNextUniqueCollection(-1);
+      let nextCollName = onRequestNextCollection ? onRequestNextCollection() : null;
+      if (nextCollName === null || nextCollName === undefined) {
+        nextCollName = getNextUniqueCollection(-1);
+      }
       if (shouldStartFromLastRef) shouldStartFromLastRef.current = true;
       setCurrentCollName(nextCollName);
-      if (onCollectionChange) onCollectionChange(tileId, nextCollName);
+      if (onCollectionChange) {
+        onCollectionChange(tileId, nextCollName);
+        if (displayedCollectionsRef.current) {
+          displayedCollectionsRef.current = [...displayedCollectionsRef.current];
+          displayedCollectionsRef.current[tileId] = nextCollName;
+        }
+      }
       setActiveIdx(0);
       setOutgoingIdx(null);
       return;
@@ -146,7 +177,8 @@ export default function useSlideshowPlayback({
     preloadAndAdvance(nextIdx, currentCollNameVal, currentIdx);
   }, [activeIdx, imagesRef, currentCollNameRef, setOutgoingIdx,
       getNextUniqueCollection, setCurrentCollName, onCollectionChange,
-      tileId, setActiveIdx, preloadAndAdvance, shouldStartFromLastRef]);
+      tileId, setActiveIdx, preloadAndAdvance, shouldStartFromLastRef,
+      displayedCollectionsRef, onRequestNextCollection]);
 
   const advanceSlideRef = useRef(advanceSlide);
   advanceSlideRef.current = advanceSlide;
@@ -172,12 +204,36 @@ export default function useSlideshowPlayback({
   // --- skipToNextCollection ---
 
   const skipToNextCollection = useCallback(() => {
+    // Try the session-level remaining queue first (never-repeats)
+    if (onRequestNextCollection) {
+      const next = onRequestNextCollection();
+      if (next) {
+        setCurrentCollName(next);
+        if (onCollectionChange) {
+          onCollectionChange(tileId, next);
+          if (displayedCollectionsRef.current) {
+            displayedCollectionsRef.current = [...displayedCollectionsRef.current];
+            displayedCollectionsRef.current[tileId] = next;
+          }
+        }
+        setActiveIdx(0);
+        setOutgoingIdx(null);
+        return;
+      }
+    }
     const nextCollName = getNextUniqueCollection(1);
     setCurrentCollName(nextCollName);
-    if (onCollectionChange) onCollectionChange(tileId, nextCollName);
+    if (onCollectionChange) {
+      onCollectionChange(tileId, nextCollName);
+      // Immediately update ref so rapid consecutive clicks see the change
+      if (displayedCollectionsRef.current) {
+        displayedCollectionsRef.current = [...displayedCollectionsRef.current];
+        displayedCollectionsRef.current[tileId] = nextCollName;
+      }
+    }
     setActiveIdx(0);
     setOutgoingIdx(null);
-  }, [getNextUniqueCollection, setCurrentCollName, onCollectionChange, tileId, setActiveIdx, setOutgoingIdx]);
+  }, [getNextUniqueCollection, setCurrentCollName, onCollectionChange, tileId, setActiveIdx, setOutgoingIdx, displayedCollectionsRef, onRequestNextCollection]);
 
   // --- selectRandomCollection ---
 
@@ -194,8 +250,14 @@ export default function useSlideshowPlayback({
       chosen = (nonCurrent.length > 0 ? nonCurrent : allColls)[Math.floor(Math.random() * (nonCurrent.length || allColls.length))];
     }
     setCurrentCollName(chosen);
-    if (onCollectionChange) onCollectionChange(tileId, chosen);
-  }, [tileId, setCurrentCollName, onCollectionChange]);
+    if (onCollectionChange) {
+      onCollectionChange(tileId, chosen);
+      if (displayedCollectionsRef.current) {
+        displayedCollectionsRef.current = [...displayedCollectionsRef.current];
+        displayedCollectionsRef.current[tileId] = chosen;
+      }
+    }
+  }, [tileId, setCurrentCollName, onCollectionChange, displayedCollectionsRef]);
 
   // --- Initial collection selection ---
 
@@ -213,9 +275,16 @@ export default function useSlideshowPlayback({
 
     // Sync mode: parent drives all tiles via syncTrigger
     if (isSyncMode) {
-      if (isPlaying && activeIdx >= 0 && imagesRef.current.length > 0) {
+      const isSyncTick = syncTrigger !== prevSyncTriggerRef.current;
+      prevSyncTriggerRef.current = syncTrigger;
+      if (isSyncTick && isPlaying && activeIdx >= 0 && imagesRef.current.length > 0) {
         advanceSlideRef.current(1);
         resetProgressBarRef.current();
+      } else if (isSyncTick && !isPlaying) {
+        // Images not ready (or wheel-paused) — roll back the ref so the
+        // pending tick isn't lost. When isPlaying flips true, this effect
+        // re-runs and advances the tile (avoids permanently stuck tiles).
+        prevSyncTriggerRef.current = syncTrigger - 1;
       }
       return;
     }
@@ -276,5 +345,6 @@ export default function useSlideshowPlayback({
     advanceSlide, handleWheel,
     skipToNextCollection, selectRandomCollection,
     handleCollectionChange,
+    isCurrentVideo,
   };
 }

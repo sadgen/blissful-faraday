@@ -1,7 +1,7 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useCallback } from 'react';
 import { 
-  RefreshCw, FolderOpen, Save, X, Settings, Image, 
-  AlertTriangle, Trash2, Sparkles, History, Shield
+  RefreshCw, FolderOpen, Save, X, Settings, Image,
+  AlertTriangle, Trash2, Sparkles, History, Shield, RotateCcw, Download
 } from 'lucide-react';
 import SlideshowTile from './SlideshowTile';
 import ErrorBoundary from './ErrorBoundary';
@@ -75,10 +75,117 @@ export default function DesktopLayout({
   onLogout,
   isSyncMode,
   setIsSyncMode,
+  videoSpeed,
+  setVideoSpeed,
+  imageSort,
+  setImageSort,
+  deletedAccounts = [],
+  onRestoreAccount,
+  dirResetKey,
 }) {
   const [isHistoryOpen, setIsHistoryOpen] = React.useState(false);
   const historyRef = React.useRef(null);
   const [activeTab, setActiveTab] = React.useState('storage');
+  const [mountedTiles, setMountedTiles] = React.useState(0);
+
+  // Daily download list state
+  const [downloadList, setDownloadList] = React.useState([]);
+  const [newDownloadUser, setNewDownloadUser] = React.useState('');
+  const [showFavoritesOnly, setShowFavoritesOnly] = React.useState(false);
+  const [showUnmanagedOnly, setShowUnmanagedOnly] = React.useState(false);
+
+  const handleToggleFavorites = () => {
+    setShowFavoritesOnly(prev => !prev);
+    setShowUnmanagedOnly(false);
+  };
+  const handleToggleUnmanaged = () => {
+    setShowUnmanagedOnly(prev => !prev);
+    setShowFavoritesOnly(false);
+  };
+
+  const fetchDownloadList = React.useCallback(async () => {
+    try {
+      const res = await fetch('/api/download-list');
+      const data = await res.json();
+      if (data.list) setDownloadList(data.list);
+    } catch (err) {
+      console.error('Failed to fetch download list:', err);
+    }
+  }, []);
+
+  // Fetch download list on mount and auto-refresh when settings opens
+  React.useEffect(() => {
+    fetchDownloadList();
+  }, [fetchDownloadList]);
+
+  React.useEffect(() => {
+    if (isSettingsOpen) fetchDownloadList();
+  }, [isSettingsOpen, fetchDownloadList]);
+
+  // Mount all tiles immediately on initial load
+  React.useEffect(() => {
+    setMountedTiles(activeTileCount);
+  }, [activeTileCount]);
+
+  // Track which tiles have loaded their first image (for sync mode delay)
+  const [tilesReady, setTilesReady] = React.useState(new Set());
+  const tilesReadyRef = useRef(new Set());
+
+  // Remaining queue: tracks collections that haven't been shown yet this session.
+  // Once a collection is displayed in any tile, it's removed forever — never repeats.
+  const remainingQueueRef = useRef([]);
+  const prevFilterKeyRef = useRef('');
+
+  const consumeNext = useCallback(() => {
+    if (remainingQueueRef.current.length > 0) {
+      const next = remainingQueueRef.current[0];
+      remainingQueueRef.current = remainingQueueRef.current.slice(1);
+      return next;
+    }
+    return null;
+  }, []);
+
+  // Stagger initial image loading in batches to avoid overwhelming backend on cold start
+  const [batchLoadIdx, setBatchLoadIdx] = React.useState(0);
+  const batchSize = 3;
+  const [batchResetKey, setBatchResetKey] = React.useState(0); // must be declared BEFORE the effect that uses it
+  React.useEffect(() => {
+    // Ensure batch loading restarts when displayedCollections changes (new directory)
+    // by making batchResetKey a deps — this forces the effect to re-run even when
+    // activeTileCount stays the same and batchLoadIdx was already 0.
+    if (!isSyncMode) {
+      // Non-sync mode: load all at once
+      setBatchLoadIdx(activeTileCount);
+      return;
+    }
+    if (batchLoadIdx < activeTileCount) {
+      const timer = setTimeout(() => setBatchLoadIdx(Math.min(batchLoadIdx + batchSize, activeTileCount)), 300);
+      return () => clearTimeout(timer);
+    }
+  }, [batchLoadIdx, activeTileCount, isSyncMode, batchResetKey]);
+
+  const handleTileReady = React.useCallback((tileId) => {
+    if (!tilesReadyRef.current.has(tileId)) {
+      tilesReadyRef.current = new Set([...tilesReadyRef.current, tileId]);
+      setTilesReady(new Set(tilesReadyRef.current));
+    }
+  }, []);
+
+  // Reset tilesReady and batch loading when scanned directory changes.
+  // Uses dirResetKey instead of displayedCollections to avoid resetting all tiles
+  // when only a single tile changes its collection (e.g. middle-click to skip).
+  // NOTE: activeTileCount is deliberately NOT a dep — when tile count changes,
+  // existing tiles keep their collections and won't re-report ready via onTileReady,
+  // so tilesReady would never reach activeTileCount and allTilesReady stays false,
+  // permanently killing the sync timer.
+  React.useEffect(() => {
+    tilesReadyRef.current = new Set();
+    setTilesReady(new Set());
+    setBatchLoadIdx(0);
+    setBatchResetKey(k => k + 1);
+  }, [dirResetKey]);
+
+  const allTilesReady = tilesReady.size >= activeTileCount;
 
   React.useEffect(() => {
     function handleClickOutside(event) {
@@ -117,14 +224,16 @@ export default function DesktopLayout({
       clearTimeout(syncTimerRef.current);
       syncTimerRef.current = null;
     }
-    if (!isSyncMode || !globalIsPlaying || !isDocumentVisible) return;
+    if (!allTilesReady || !isSyncMode || !globalIsPlaying || !isDocumentVisible) return;
 
     let targetTime = Date.now() + globalSpeed;
 
     const tick = () => {
       setSyncTrigger(prev => prev + 1);
       const elapsed = Date.now() - targetTime;
-      const nextDelay = Math.max(0, globalSpeed - elapsed);
+      // Clamp minimum delay to 16ms (1 frame): if a tick ran late,
+      // nextDelay=0 would spin a busy loop that starves rendering.
+      const nextDelay = Math.max(16, globalSpeed - elapsed);
       targetTime += globalSpeed;
       syncTimerRef.current = setTimeout(tick, nextDelay);
     };
@@ -137,7 +246,7 @@ export default function DesktopLayout({
         syncTimerRef.current = null;
       }
     };
-  }, [isSyncMode, globalSpeed, globalIsPlaying, isDocumentVisible]);
+  }, [allTilesReady, isSyncMode, globalSpeed, globalIsPlaying, isDocumentVisible]);
 
   return (
     <div className="app-container">
@@ -172,7 +281,34 @@ export default function DesktopLayout({
             </defs>
           </svg>
 
-          {displayedCollections.map((collName, index) => {
+          {/* Filter tiles */}
+          {(() => {
+            let filtered;
+            let tileCollections;
+            let tileDisplayedCollections;
+            if (showFavoritesOnly) {
+              filtered = collections.filter(c => downloadList.includes(c));
+              tileCollections = filtered;
+              tileDisplayedCollections = filtered.slice(0, activeTileCount);
+            } else if (showUnmanagedOnly) {
+              filtered = collections.filter(c =>
+                !downloadList.includes(c) && !(deletedAccounts || []).includes(c)
+              );
+              tileCollections = filtered;
+              tileDisplayedCollections = filtered.slice(0, activeTileCount);
+            } else {
+              filtered = displayedCollections;
+              tileCollections = collections;
+              tileDisplayedCollections = displayedCollections;
+            }
+            // Initialize/reset remaining queue when filter/sort/collections change
+            const filterKey = `${showFavoritesOnly}:${showUnmanagedOnly}:${collections.length}:${sortMethod}:${dirResetKey}:${activeTileCount}`;
+            if (filterKey !== prevFilterKeyRef.current) {
+              prevFilterKeyRef.current = filterKey;
+              remainingQueueRef.current = filtered.slice(activeTileCount);
+            }
+            return filtered.map((collName, index) => {
+            if (index >= mountedTiles) return null;
             const position = scaledPositions[index] || tilePositions[index] || { left: 20, top: 20, width: 350, height: 467 };
             
             return (
@@ -189,10 +325,12 @@ export default function DesktopLayout({
                 <ErrorBoundary fallbackLabel="该窗口出现异常">
                   <SlideshowTile
                     tileId={index}
-                    collections={collections}
-                    displayedCollections={displayedCollections}
+                    collections={tileCollections}
+                    displayedCollections={tileDisplayedCollections}
                     onCollectionChange={handleCollectionChangeForTile}
                     initialCollectionName={collName}
+                    onTileReady={handleTileReady}
+                    batchLoadIdx={batchLoadIdx}
                     globalSpeed={globalSpeed}
                     globalIsPlaying={globalIsPlaying && isDocumentVisible}
                     globalRefreshTrigger={globalRefreshTrigger}
@@ -205,12 +343,17 @@ export default function DesktopLayout({
                     isOverlapping={overlappingTiles.has(index)}
                     intersections={tileIntersections[index] || []}
                     isSyncMode={isSyncMode}
+                    downloadList={downloadList}
                     syncTrigger={syncTrigger}
+                    videoSpeed={videoSpeed}
+                    imageSort={imageSort}
+                    fetchCollections={fetchCollections}
+                    onRequestNextCollection={consumeNext}
                   />
                 </ErrorBoundary>
               </div>
             );
-          })}
+          });})()}
         </div>
       ) : (
         /* Empty/Error State */
@@ -288,6 +431,14 @@ export default function DesktopLayout({
           onOpenLan={lanIp ? () => setShowLanModal(true) : null}
           isSyncMode={isSyncMode}
           setIsSyncMode={setIsSyncMode}
+          videoSpeed={videoSpeed}
+          setVideoSpeed={setVideoSpeed}
+          imageSort={imageSort}
+          setImageSort={setImageSort}
+          showFavoritesOnly={showFavoritesOnly}
+          setShowFavoritesOnly={setShowFavoritesOnly}
+          showUnmanagedOnly={showUnmanagedOnly}
+          setShowUnmanagedOnly={setShowUnmanagedOnly}
         />
       )}
 
@@ -329,6 +480,14 @@ export default function DesktopLayout({
           >
             <Shield size={14} />
             安全中心
+          </button>
+          <button
+            type="button"
+            className={`settings-tab-btn ${activeTab === 'daily-download' ? 'active' : ''}`}
+            onClick={() => setActiveTab('daily-download')}
+          >
+            <Download size={14} />
+            每日下载
           </button>
         </div>
 
@@ -475,6 +634,23 @@ export default function DesktopLayout({
                   💡 使用底部缩放条调整窗口大小
                 </div>
               </div>
+
+              {/* Reset */}
+              <button
+                type="button"
+                onClick={() => {
+                  setInputScanDir('RESET_TO_DEFAULT');
+                  fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ scanDirectory: 'RESET_TO_DEFAULT' })
+                  }).then(() => fetchCollections());
+                }}
+                className="glass-button"
+                style={{ width: '100%', justifyContent: 'center', fontSize: '0.75rem', background: 'rgba(255, 255, 255, 0.03)', marginTop: 16 }}
+              >
+                重置为项目内置 resources/
+              </button>
             </div>
 
             {/* Transition Animation Effect */}
@@ -499,10 +675,9 @@ export default function DesktopLayout({
                       color: '#fff',
                       fontSize: '0.7rem',
                       padding: '4px 10px',
-                      borderRadius: '6px',
+                      borderRadius: 6,
                       cursor: 'pointer',
-                      fontWeight: globalTransitionEffect === effect.id ? '600' : 'normal',
-                      transition: 'var(--transition-smooth)'
+                      transition: 'all 0.2s'
                     }}
                   >
                     {effect.label}
@@ -511,22 +686,105 @@ export default function DesktopLayout({
               </div>
             </div>
 
-            <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 'auto' }}>
-              <h4 style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>快捷扫描预设:</h4>
+            {/* Deleted Accounts Section */}
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 16 }}>
+              <h4 style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Trash2 size={14} /> 已删除账号
+              </h4>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 8 }}>
+                以下账号已从本地删除，可随时恢复重新下载。
+              </div>
+              {deletedAccounts.length === 0 ? (
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic', padding: '8px 0' }}>
+                  暂无已删除的账号
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto' }}>
+                  {deletedAccounts.map((username, idx) => (
+                    <div key={idx} style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      padding: '6px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: 6,
+                      fontSize: '0.75rem'
+                    }}>
+                      <span style={{ color: 'var(--text-primary)', fontFamily: 'monospace' }}>{username}</span>
+                      <button onClick={() => onRestoreAccount(username)} style={{
+                        background: 'rgba(34, 197, 94, 0.15)', border: '1px solid rgba(34, 197, 94, 0.2)',
+                        color: '#22c55e', padding: '3px 10px', borderRadius: 5, cursor: 'pointer',
+                        fontSize: '0.7rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4
+                      }}>
+                        <RotateCcw size={11} /> 恢复
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : activeTab === 'daily-download' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, flex: 1, overflowY: 'auto', paddingRight: 4, marginTop: 10 }}>
+            <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block' }}>
+              每日下载列表 — 每天凌晨 2:00 自动下载以下账号的最新图片
+            </label>
+            {downloadList.length === 0 ? (
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', padding: '16px 0', textAlign: 'center' }}>
+                列表为空。在播放窗口中点击 ⭐ 按钮添加账号，或在下方的输入框中手动添加。
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {downloadList.map((username, idx) => (
+                  <div key={idx} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '8px 10px', background: 'rgba(255,255,255,0.04)',
+                    borderRadius: 6, fontSize: '0.8rem'
+                  }}>
+                    <span>@{username}</span>
+                    <button
+                      type="button"
+                      className="tile-mini-btn"
+                      onClick={async () => {
+                        await fetch('/api/download-list/remove', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ username })
+                        });
+                        fetchDownloadList();
+                      }}
+                      title="移除"
+                      style={{ color: '#ef4444' }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <input
+                type="text"
+                className="glass-input"
+                value={newDownloadUser}
+                onChange={(e) => setNewDownloadUser(e.target.value)}
+                placeholder="输入 Instagram 用户名手动添加"
+                style={{ flex: 1, fontSize: '0.8rem' }}
+              />
               <button
                 type="button"
-                onClick={() => {
-                  setInputScanDir('');
-                  fetch('/api/settings', {
+                className="glass-button active"
+                disabled={!newDownloadUser.trim()}
+                onClick={async () => {
+                  const name = newDownloadUser.trim();
+                  if (!name) return;
+                  await fetch('/api/download-list/add', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ scanDirectory: 'RESET_TO_DEFAULT' })
-                  }).then(() => fetchCollections());
+                    body: JSON.stringify({ username: name })
+                  });
+                  setNewDownloadUser('');
+                  fetchDownloadList();
                 }}
-                className="glass-button"
-                style={{ width: '100%', justifyContent: 'center', fontSize: '0.75rem', background: 'rgba(255, 255, 255, 0.03)' }}
+                style={{ padding: '0 14px', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
               >
-                重置为项目内置 resources/
+                添加
               </button>
             </div>
           </div>

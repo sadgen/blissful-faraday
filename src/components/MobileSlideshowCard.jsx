@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Pause, X, ChevronRight, ChevronLeft, Maximize2, Minimize2 } from 'lucide-react';
+import { Play, Pause, X, ChevronRight, ChevronLeft, Maximize2, Minimize2, Settings, Trash2, Shuffle } from 'lucide-react';
+import { isVideoFile, getImageDimensions } from '../utils/imageHelpers';
 
 export default function MobileSlideshowCard({
   tileId,
@@ -20,6 +21,11 @@ export default function MobileSlideshowCard({
   intersections = [],
   isSyncMode,
   syncTrigger,
+  videoSpeed,
+  imageSort = 'name',
+  fetchCollections,
+  onRequestNextCollection,
+  downloadList = [],
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [images, setImages] = useState([]);
@@ -27,7 +33,16 @@ export default function MobileSlideshowCard({
   const [outgoingIdx, setOutgoingIdx] = useState(null);
   const [localIsPlaying, setLocalIsPlaying] = useState(true);
   const [localSpeedMult, setLocalSpeedMult] = useState(1);
+  const [localTransitionEffect, setLocalTransitionEffect] = useState('');
   const [progressBarReset, setProgressBarReset] = useState(false);
+  // Overlay controls
+  const [collectionInfo, setCollectionInfo] = useState(null);
+  const [isFavorite, setIsFavorite] = useState(false);
+  const [favLoading, setFavLoading] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
+  const videoFileNamesRef = useRef(new Set());
+  const videoFileNames = videoFileNamesRef.current;
   
   // Touch Gestures State
   const [touchStart, setTouchStart] = useState({ x: 0, y: 0 });
@@ -62,12 +77,79 @@ export default function MobileSlideshowCard({
     };
   }, []);
 
-  const transitionEffect = globalTransitionEffect || 'none';
+  // Fetch collection info (username + full_name)
+  useEffect(() => {
+    if (!currentCollName) { setCollectionInfo(null); return; }
+    let cancelled = false;
+    fetch(`/api/collection/info?collection=${encodeURIComponent(currentCollName)}`)
+      .then(res => res.json())
+      .then(data => { if (!cancelled) setCollectionInfo(data); })
+      .catch(() => { if (!cancelled) setCollectionInfo(null); });
+    return () => { cancelled = true; };
+  }, [currentCollName]);
+
+  // Check if current collection is in daily download list (P1: use parent-fetched list, no per-tile fetch)
+  useEffect(() => {
+    setIsFavorite(downloadList.includes(currentCollName));
+  }, [downloadList, currentCollName]);
+
+  const toggleFavorite = useCallback(async () => {
+    if (favLoading || !currentCollName) return;
+    setFavLoading(true);
+    try {
+      const endpoint = isFavorite ? '/api/download-list/remove' : '/api/download-list/add';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: currentCollName })
+      });
+      const data = await res.json();
+      if (data.success) setIsFavorite(!isFavorite);
+    } catch (err) {
+      console.error('Failed to toggle favorite:', err);
+    } finally {
+      setFavLoading(false);
+    }
+  }, [currentCollName, isFavorite, favLoading]);
+
+  const handleDelete = useCallback(async () => {
+    if (!window.confirm(`确定要删除图集 "${currentCollName}" 吗？\n\n这将永久删除该文件夹及其所有图片。`)) return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`/api/collection/delete?collection=${encodeURIComponent(currentCollName)}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || '删除失败');
+      }
+      if (fetchCollections) {
+        await fetchCollections();
+      }
+    } catch (err) {
+      alert(`删除失败: ${err.message}`);
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [currentCollName, fetchCollections]);
+
+  const transitionEffect = localTransitionEffect || globalTransitionEffect || 'none';
 
   const timerRef = useRef(null);
   const staggerTimeoutRef = useRef(null);
   const staggerAppliedRef = useRef(false);
   const shouldStartFromLastRef = useRef(false);
+  const prevSyncTriggerRef = useRef(syncTrigger);
+  // C3: unified cleanup for outgoingIdx timers (unmount-safe)
+  const outgoingTimerRef = useRef(null);
+  const clearOutgoingTimer = useCallback(() => {
+    if (outgoingTimerRef.current) {
+      clearTimeout(outgoingTimerRef.current);
+      outgoingTimerRef.current = null;
+    }
+  }, []);
+  const scheduleOutgoingClear = useCallback(() => {
+    clearOutgoingTimer();
+    outgoingTimerRef.current = setTimeout(() => setOutgoingIdx(null), 400);
+  }, [clearOutgoingTimer]);
 
   // Preload cache for faster image switching
   const preloadCacheRef = useRef(new Map());
@@ -108,58 +190,15 @@ export default function MobileSlideshowCard({
     }
   }, [initialCollectionName]);
 
-  // Parse image dimensions from buffer (JPEG, PNG, GIF, WebP) without full decoding
-  const getImageDimensions = (buffer) => {
-    const bytes = new Uint8Array(buffer);
-    
-    // JPEG (FF D8)
-    if (bytes[0] === 0xFF && bytes[1] === 0xD8) {
-      let offset = 2;
-      while (offset < bytes.length) {
-        if (bytes[offset] !== 0xFF) break;
-        const marker = bytes[offset + 1];
-        if ((marker >= 0xC0 && marker <= 0xC3) || 
-            (marker >= 0xC5 && marker <= 0xC7) ||
-            (marker >= 0xC9 && marker <= 0xCB) ||
-            (marker >= 0xCD && marker <= 0xCF)) {
-          const height = (bytes[offset + 5] << 8) | bytes[offset + 6];
-          const width = (bytes[offset + 7] << 8) | bytes[offset + 8];
-          if (width > 0 && height > 0) return { width, height };
-        }
-        const length = (bytes[offset + 2] << 8) | bytes[offset + 3];
-        offset += 2 + length;
-        if (length < 2 || offset >= bytes.length) break;
-      }
-    }
-    
-    // PNG
-    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) {
-      const width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
-      const height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
-      if (width > 0 && height > 0) return { width, height };
-    }
-    
-    // GIF
-    if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
-      const width = bytes[6] | (bytes[7] << 8);
-      const height = bytes[8] | (bytes[9] << 8);
-      if (width > 0 && height > 0) return { width, height };
-    }
-    
-    // WebP
-    if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
-      if (bytes[11] === 0x57 && bytes[12] === 0x42 && bytes[13] === 0x50) {
-        const width = bytes[26] | (bytes[27] << 8) | ((bytes[28] & 0x7F) << 16);
-        const height = bytes[28] | (bytes[29] << 8) | ((bytes[30] & 0x7F) << 16);
-        if (width > 0 && height > 0) return { width, height };
-      }
-    }
-    
-    return null;
-  };
-
   // Detect aspect ratio of image
   const detectAspectRatio = (collName, imgName) => {
+    // P2: reuse cached aspectRatio from preloadCacheRef — skip the range fetch entirely
+    const cacheKey = `${collName}:${imgName}`;
+    const cached = preloadCacheRef.current.get(cacheKey);
+    if (cached && cached.aspectRatio) {
+      setTileAspectRatio(cached.aspectRatio);
+      return;
+    }
     const imgUrl = `/api/image?collection=${encodeURIComponent(collName)}&name=${encodeURIComponent(imgName)}`;
     
     fetch(imgUrl, { 
@@ -190,7 +229,7 @@ export default function MobileSlideshowCard({
     if (images.length > 0 && activeIdx >= 0 && activeIdx < images.length) {
       detectAspectRatio(currentCollName, images[activeIdx]);
     }
-  }, [activeIdx, currentCollName, images.length > 0 ? images : []]);
+  }, [activeIdx, currentCollName, images.length]);
 
   // Fetch images when directory changes
   useEffect(() => {
@@ -204,7 +243,7 @@ export default function MobileSlideshowCard({
       try {
         setIsLoadingImages(true);
         setLoadError('');
-        const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}`);
+        const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}&sort=${imageSort}`);
         if (!res.ok) {
           throw new Error(`加载目录失败: ${res.statusText}`);
         }
@@ -213,6 +252,14 @@ export default function MobileSlideshowCard({
           throw new Error(data.error);
         }
         const newImages = data.images || [];
+
+        // Detect video files
+        const videoExts = new Set(['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv']);
+        videoFileNames.clear();
+        newImages.forEach(name => {
+          const ext = name.substring(name.lastIndexOf('.')).toLowerCase();
+          if (videoExts.has(ext)) videoFileNames.add(name);
+        });
 
         // Preload first image before switching (prevents black flash)
         if (newImages.length > 0) {
@@ -263,21 +310,21 @@ export default function MobileSlideshowCard({
     };
 
     fetchImages();
-  }, [currentCollName]);
+  }, [currentCollName, imageSort]);
 
   // Initial assignment
   useEffect(() => {
     if (collections.length > 0 && !currentCollName && !initialCollectionName) {
       selectRandomCollection();
     }
-  }, [collections, currentCollName, initialCollectionName]);
+  }, [collections, currentCollName, initialCollectionName, selectRandomCollection]);
 
   // Handle global refresh trigger
   useEffect(() => {
     if (collections.length > 0 && !initialCollectionName) {
       selectRandomCollection();
     }
-  }, [globalRefreshTrigger, initialCollectionName]);
+  }, [globalRefreshTrigger, initialCollectionName, selectRandomCollection]);
 
   const getNextUniqueCollection = (direction) => {
     const allColls = collectionsRef.current;
@@ -303,7 +350,7 @@ export default function MobileSlideshowCard({
       for (let i = 1; i <= allColls.length; i++) {
         const nextIdx = (currentIdxInCollections + i * direction + allColls.length * i) % allColls.length;
         const candidate = allColls[nextIdx];
-        if (!otherDisplayedColls.includes(candidate)) {
+        if (!otherDisplayedColls.includes(candidate) && candidate !== currentCollNameVal) {
           return candidate;
         }
       }
@@ -313,7 +360,8 @@ export default function MobileSlideshowCard({
     return allColls[0];
   };
 
-  const selectRandomCollection = () => {
+  // C1: stable callback — read latest values via refs, no stale closure
+  const selectRandomCollection = useCallback(() => {
     const allColls = collectionsRef.current;
     if (allColls.length === 0) return;
 
@@ -332,7 +380,7 @@ export default function MobileSlideshowCard({
     if (onCollectionChange) {
       onCollectionChange(tileId, chosenColl);
     }
-  };
+  }, [tileId, onCollectionChange]);
 
   const duration = globalSpeed / localSpeedMult;
   const isPlaying = globalIsPlaying && localIsPlaying && images.length > 1;
@@ -365,7 +413,9 @@ export default function MobileSlideshowCard({
 
     // Sync mode: parent drives all tiles via syncTrigger
     if (isSyncMode) {
-      if (isPlaying && activeIdx >= 0 && imagesRef.current.length > 0) {
+      const isSyncTick = syncTrigger !== prevSyncTriggerRef.current;
+      prevSyncTriggerRef.current = syncTrigger;
+      if (isSyncTick && isPlaying && activeIdx >= 0 && imagesRef.current.length > 0) {
         advanceSlide(1);
         resetProgressBar();
       }
@@ -405,6 +455,9 @@ export default function MobileSlideshowCard({
     };
   }, [isSyncMode, syncTrigger, isPlaying, duration, totalTiles, tileId, globalSpeed]);
 
+  // C3: clear pending outgoingIdx timer on unmount
+  useEffect(() => clearOutgoingTimer, [clearOutgoingTimer]);
+
   const preloadImages = (startIdx, count) => {
     const currentImages = imagesRef.current;
     if (currentImages.length <= 1) return;
@@ -443,7 +496,7 @@ export default function MobileSlideshowCard({
       if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
       resetProgressBar();
-      setTimeout(() => setOutgoingIdx(null), 400);
+      scheduleOutgoingClear();
       preloadImages(nextIdx + 1, PRELOAD_COUNT);
       return;
     }
@@ -471,7 +524,7 @@ export default function MobileSlideshowCard({
         if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
         setActiveIdx(nextIdx);
         resetProgressBar();
-        setTimeout(() => setOutgoingIdx(null), 400);
+        scheduleOutgoingClear();
         preloadImages(nextIdx + 1, PRELOAD_COUNT);
       };
       img.src = imgUrl;
@@ -485,7 +538,7 @@ export default function MobileSlideshowCard({
         if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
         setActiveIdx(nextIdx);
         resetProgressBar();
-        setTimeout(() => setOutgoingIdx(null), 400);
+        scheduleOutgoingClear();
         preloadImages(nextIdx + 1, PRELOAD_COUNT);
       };
       img.src = imgUrl;
@@ -502,21 +555,35 @@ export default function MobileSlideshowCard({
     const currentCollNameVal = currentCollNameRef.current;
     
     if (nextIdx >= currentImages.length) {
-      const nextCollName = getNextUniqueCollection(1);
+      let nextCollName = onRequestNextCollection ? onRequestNextCollection() : null;
+      if (nextCollName === null || nextCollName === undefined) {
+        nextCollName = getNextUniqueCollection(1);
+      }
       setCurrentCollName(nextCollName);
       if (onCollectionChange) {
         onCollectionChange(tileId, nextCollName);
+        if (displayedCollectionsRef.current) {
+          displayedCollectionsRef.current = [...displayedCollectionsRef.current];
+          displayedCollectionsRef.current[tileId] = nextCollName;
+        }
       }
       setActiveIdx(0);
       setOutgoingIdx(null);
       resetProgressBar();
       return;
     } else if (nextIdx < 0) {
-      const nextCollName = getNextUniqueCollection(-1);
+      let nextCollName = onRequestNextCollection ? onRequestNextCollection() : null;
+      if (nextCollName === null || nextCollName === undefined) {
+        nextCollName = getNextUniqueCollection(-1);
+      }
       shouldStartFromLastRef.current = true;
       setCurrentCollName(nextCollName);
       if (onCollectionChange) {
         onCollectionChange(tileId, nextCollName);
+        if (displayedCollectionsRef.current) {
+          displayedCollectionsRef.current = [...displayedCollectionsRef.current];
+          displayedCollectionsRef.current[tileId] = nextCollName;
+        }
       }
       setActiveIdx(0);
       setOutgoingIdx(null);
@@ -528,10 +595,32 @@ export default function MobileSlideshowCard({
   };
 
   const skipToNextCollection = (direction = 1) => {
+    // Try the session-level remaining queue first (never-repeats)
+    if (onRequestNextCollection) {
+      const next = onRequestNextCollection();
+      if (next) {
+        setCurrentCollName(next);
+        if (onCollectionChange) {
+          onCollectionChange(tileId, next);
+          if (displayedCollectionsRef.current) {
+            displayedCollectionsRef.current = [...displayedCollectionsRef.current];
+            displayedCollectionsRef.current[tileId] = next;
+          }
+        }
+        setActiveIdx(0);
+        setOutgoingIdx(null);
+        resetProgressBar();
+        return;
+      }
+    }
     const nextCollName = getNextUniqueCollection(direction);
     setCurrentCollName(nextCollName);
     if (onCollectionChange) {
       onCollectionChange(tileId, nextCollName);
+      if (displayedCollectionsRef.current) {
+        displayedCollectionsRef.current = [...displayedCollectionsRef.current];
+        displayedCollectionsRef.current[tileId] = nextCollName;
+      }
     }
     setActiveIdx(0);
     setOutgoingIdx(null);
@@ -772,6 +861,196 @@ export default function MobileSlideshowCard({
           📁 {currentCollName}
         </div>
 
+        {/* ---- Overlay Controls (visible when showOverlay is true) ---- */}
+        {showOverlay && (
+          <>
+            {/* Top action bar */}
+            <div 
+              className="mobile-overlay-top"
+              onTouchStart={(e) => e.stopPropagation()}
+              onTouchMove={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: 'absolute', top: 0, left: 0, right: 0,
+                zIndex: 20, padding: '6px 8px',
+                background: 'linear-gradient(180deg, rgba(0,0,0,0.7) 0%, transparent 100%)',
+                display: 'flex', alignItems: 'center', gap: 4
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ width: 5, height: 5, borderRadius: '50%', background: isPlaying ? '#10b981' : '#f59e0b', flexShrink: 0 }} />
+                <div style={{ minWidth: 0, lineHeight: 1.1 }}>
+                  <div style={{ fontSize: '0.7rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#fff' }}>
+                    {currentCollName}
+                  </div>
+                  {collectionInfo?.full_name && (
+                    <div style={{ fontSize: '0.55rem', color: 'rgba(255,255,255,0.5)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {collectionInfo.full_name}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <span style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.6)', marginRight: 4, flexShrink: 0 }}>
+                {activeIdx + 1}/{images.length}
+              </span>
+              <button
+                className="tile-mini-btn"
+                onClick={toggleFavorite}
+                disabled={favLoading}
+                title={isFavorite ? '从每日下载列表中移除' : '加入每日下载列表'}
+                style={{ color: isFavorite ? '#fbbf24' : 'rgba(255,255,255,0.7)', opacity: favLoading ? 0.5 : 1, flexShrink: 0 }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill={isFavorite ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                </svg>
+              </button>
+              <button
+                className="tile-mini-btn"
+                onClick={handleDelete}
+                disabled={isDeleting}
+                title="删除此图集"
+                style={{ color: isDeleting ? 'rgba(255,255,255,0.4)' : '#ef4444', flexShrink: 0 }}
+              >
+                <Trash2 size={13} />
+              </button>
+              <button
+                className="tile-mini-btn"
+                onClick={() => setShowConfig(!showConfig)}
+                title="本窗口设置"
+                style={{ flexShrink: 0 }}
+              >
+                <Settings size={13} style={{ transform: showConfig ? 'rotate(45deg)' : 'none', transition: 'transform 0.3s' }} />
+              </button>
+            </div>
+
+            {/* Config Panel */}
+            {showConfig && (
+              <div
+                onTouchStart={(e) => e.stopPropagation()}
+                onTouchMove={(e) => e.stopPropagation()}
+                onTouchEnd={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: 'absolute', top: 44, right: 8, zIndex: 30,
+                  background: 'rgba(10, 15, 26, 0.95)',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  backdropFilter: 'blur(12px)', borderRadius: 12,
+                  padding: 12, width: 200, display: 'flex', flexDirection: 'column', gap: 10,
+                  boxShadow: '0 10px 25px rgba(0,0,0,0.5)'
+                }}
+              >
+                <div>
+                  <label style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                    更换图片集:
+                  </label>
+                  <select
+                    className="glass-select"
+                    value={currentCollName}
+                    onChange={(e) => {
+                      const newName = e.target.value;
+                      setCurrentCollName(newName);
+                      if (onCollectionChange) onCollectionChange(tileId, newName);
+                    }}
+                    style={{ width: '100%', fontSize: '0.75rem' }}
+                  >
+                    {collections.map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                    播放速度倍率:
+                  </label>
+                  <div style={{ display: 'flex', gap: 3 }}>
+                    {[0.5, 1, 1.5, 2].map(speed => (
+                      <button
+                        key={speed}
+                        onClick={() => setLocalSpeedMult(speed)}
+                        style={{
+                          flex: 1, background: localSpeedMult === speed ? 'var(--accent-purple)' : 'rgba(255,255,255,0.06)',
+                          border: 'none', color: '#fff', fontSize: '0.7rem', padding: '3px',
+                          borderRadius: 4, cursor: 'pointer', transition: 'background 0.2s'
+                        }}
+                      >
+                        {speed}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                    过渡动画:
+                  </label>
+                  <select
+                    className="glass-select"
+                    value={localTransitionEffect}
+                    onChange={(e) => setLocalTransitionEffect(e.target.value)}
+                    style={{ width: '100%', fontSize: '0.75rem' }}
+                  >
+                    <option value="">跟随全局</option>
+                    <option value="ken-burns">温和缩放</option>
+                    <option value="fade">平滑渐变</option>
+                    <option value="slide">滑入</option>
+                    <option value="none">关闭动画</option>
+                  </select>
+                </div>
+                <button
+                  onClick={() => { setShowConfig(false); selectRandomCollection(); }}
+                  className="glass-button"
+                  style={{
+                    width: '100%', padding: '5px', fontSize: '0.7rem',
+                    justifyContent: 'center', background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.1)'
+                  }}
+                >
+                  <Shuffle size={11} /> 随机换一组
+                </button>
+              </div>
+            )}
+
+            {/* Bottom nav bar */}
+            <div
+              onTouchStart={(e) => e.stopPropagation()}
+              onTouchMove={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 20,
+                padding: '6px 12px',
+                background: 'linear-gradient(0deg, rgba(0,0,0,0.7) 0%, transparent 100%)',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <button className="tile-mini-btn" onClick={() => advanceSlide(-1)} title="上一张" style={{ padding: 4 }}>
+                  <ChevronLeft size={16} />
+                </button>
+                <button
+                  className="tile-mini-btn"
+                  onClick={() => setLocalIsPlaying(!localIsPlaying)}
+                  title={localIsPlaying ? '暂停当前' : '播放当前'}
+                  style={{ padding: 4 }}
+                >
+                  {localIsPlaying ? <Pause size={14} /> : <Play size={14} />}
+                </button>
+                <button className="tile-mini-btn" onClick={() => advanceSlide(1)} title="下一张" style={{ padding: 4 }}>
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+              <div style={{
+                fontSize: '0.6rem', color: 'rgba(255,255,255,0.5)',
+                background: 'rgba(0,0,0,0.5)', padding: '2px 6px', borderRadius: 8,
+                display: 'flex', alignItems: 'center', gap: 4
+              }}>
+                {videoFileNames.has(images[activeIdx]) && <span>🎬</span>}
+                <span>{localSpeedMult !== 1 ? `${localSpeedMult}x` : ''}</span>
+              </div>
+            </div>
+          </>
+        )}
+
         {/* Image Display */}
         <div className="mobile-card-media-wrapper">
           {isLoadingImages ? (
@@ -799,6 +1078,8 @@ export default function MobileSlideshowCard({
               const isActive = index === activeIdx;
               const isOutgoing = index === outgoingIdx;
               if (!isActive && !isOutgoing) return null;
+              const isVideo = videoFileNames.has(imgName);
+              const isOnlyVideo = isVideo && images.length === 1;
 
               return (
                 <div
@@ -817,25 +1098,44 @@ export default function MobileSlideshowCard({
                     zIndex: isActive ? 2 : 1
                   }}
                 >
-                  {/* Aspect Ratio Blurred Background */}
-                  <img
-                    src={getImageUrl(imgName)}
-                    alt=""
-                    className="mobile-card-blur-bg"
-                  />
-                  {/* Sharp Foreground Image */}
-                  <img
-                    src={getImageUrl(imgName)}
-                    alt={imgName}
-                    loading="lazy"
-                    className="mobile-card-image"
-                    style={{
-                      transform: isSwiping 
-                        ? `translateX(${touchDelta.x * 0.4}px)` 
-                        : 'translateX(0px)',
-                      transition: isSwiping ? 'none' : 'transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)'
-                    }}
-                  />
+                  {isVideo && isActive ? (
+                    <video
+                      src={getImageUrl(imgName)}
+                      muted
+                      autoPlay
+                      playsInline
+                      loop={isOnlyVideo}
+                      onEnded={() => advanceSlide(1)}
+                      playbackRate={videoSpeed}
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'contain'
+                      }}
+                    />
+                  ) : (
+                    <>
+                      {/* Aspect Ratio Blurred Background */}
+                      <img
+                        src={getImageUrl(imgName)}
+                        alt=""
+                        className="mobile-card-blur-bg"
+                      />
+                      {/* Sharp Foreground Image */}
+                      <img
+                        src={getImageUrl(imgName)}
+                        alt={imgName}
+                        loading="lazy"
+                        className="mobile-card-image"
+                        style={{
+                          transform: isSwiping
+                            ? `translateX(${touchDelta.x * 0.4}px)`
+                            : 'translateX(0px)',
+                          transition: isSwiping ? 'none' : 'transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)'
+                        }}
+                      />
+                    </>
+                  )}
                 </div>
               );
             })
