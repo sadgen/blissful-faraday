@@ -312,6 +312,30 @@ export default function MobileSlideshowCard({
     fetchImages();
   }, [currentCollName, imageSort]);
 
+  // C1: stable callback — read latest values via refs, no stale closure
+  // NOTE: must be declared BEFORE the useEffect hooks below that reference it
+  // in their dependency arrays (TDZ: dep arrays are evaluated at render time).
+  const selectRandomCollection = useCallback(() => {
+    const allColls = collectionsRef.current;
+    if (allColls.length === 0) return;
+
+    const otherDisplayedColls = (displayedCollectionsRef.current || []).filter((_, idx) => idx !== tileId);
+    const candidates = allColls.filter(c => !otherDisplayedColls.includes(c));
+
+    let chosenColl;
+    if (candidates.length > 0) {
+      chosenColl = candidates[Math.floor(Math.random() * candidates.length)];
+    } else {
+      const otherColls = allColls.filter(c => c !== currentCollNameRef.current);
+      chosenColl = otherColls.length > 0 ? otherColls[Math.floor(Math.random() * otherColls.length)] : allColls[0];
+    }
+
+    setCurrentCollName(chosenColl);
+    if (onCollectionChange) {
+      onCollectionChange(tileId, chosenColl);
+    }
+  }, [tileId, onCollectionChange]);
+
   // Initial assignment
   useEffect(() => {
     if (collections.length > 0 && !currentCollName && !initialCollectionName) {
@@ -359,28 +383,6 @@ export default function MobileSlideshowCard({
     }
     return allColls[0];
   };
-
-  // C1: stable callback — read latest values via refs, no stale closure
-  const selectRandomCollection = useCallback(() => {
-    const allColls = collectionsRef.current;
-    if (allColls.length === 0) return;
-
-    const otherDisplayedColls = (displayedCollectionsRef.current || []).filter((_, idx) => idx !== tileId);
-    const candidates = allColls.filter(c => !otherDisplayedColls.includes(c));
-
-    let chosenColl;
-    if (candidates.length > 0) {
-      chosenColl = candidates[Math.floor(Math.random() * candidates.length)];
-    } else {
-      const otherColls = allColls.filter(c => c !== currentCollNameRef.current);
-      chosenColl = otherColls.length > 0 ? otherColls[Math.floor(Math.random() * otherColls.length)] : allColls[0];
-    }
-
-    setCurrentCollName(chosenColl);
-    if (onCollectionChange) {
-      onCollectionChange(tileId, chosenColl);
-    }
-  }, [tileId, onCollectionChange]);
 
   const duration = globalSpeed / localSpeedMult;
   const isPlaying = globalIsPlaying && localIsPlaying && images.length > 1;
