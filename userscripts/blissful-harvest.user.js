@@ -1,0 +1,284 @@
+// ==UserScript==
+// @name         Blissful Faraday — Instagram 浏览同步
+// @namespace    blissful-faraday
+// @version      0.2.0
+// @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。只收集页面上已加载的媒体地址，不产生额外对 IG 的请求。
+// @match        https://www.instagram.com/*
+// @run-at       document-idle
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @connect      localhost
+// @connect      127.0.0.1
+// @connect      gallery.example.com
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  // ─── 配置 ────────────────────────────────────────────────────────────────
+  // 同步目标是画廊服务器，与浏览用的电脑无关：在任何设备上刷到的图，
+  // 都会汇入同一台服务器。跨机器使用时把地址填成服务器的局域网地址。
+  const DEFAULT_GALLERY = 'http://localhost:3000';
+  const GALLERY = () => (GM_getValue('galleryUrl', DEFAULT_GALLERY) || '').replace(/\/+$/, '');
+  const ADDRESS_PROMPT = 'blissful-faraday 画廊地址（填好后需在该浏览器登录一次画廊）\n'
+    + '· 推荐：https://gallery.example.com:8443 （地址固定，任何网络可用）\n'
+    + '· 服务器本机浏览：http://localhost:3000\n'
+    + '· 仅局域网：http://192.168.1.100:3000';
+  GM_registerMenuCommand('设置画廊地址', () => {
+    const v = prompt(ADDRESS_PROMPT, GM_getValue('galleryUrl', DEFAULT_GALLERY));
+    if (v && v.trim()) GM_setValue('galleryUrl', v.trim().replace(/\/+$/, ''));
+  });
+  // 首次运行引导：新机器安装后主动询问目标地址，避免默默发往 localhost
+  if (!GM_getValue('galleryUrl', '')) {
+    const v = prompt(ADDRESS_PROMPT, DEFAULT_GALLERY);
+    if (v && v.trim()) GM_setValue('galleryUrl', v.trim().replace(/\/+$/, ''));
+  }
+  GM_registerMenuCommand('清空当前图集的同步历史', () => {
+    const username = profileFromPath();
+    if (username) { GM_setValue(sentKey(username), '[]'); flashBadge(`已清空 @${username} 的同步历史`); }
+    else flashBadge('请先进入某个图集主页');
+  });
+
+  // ─── 媒体地址识别 ────────────────────────────────────────────────────────
+  const RESERVED = new Set(['p', 'reel', 'reels', 'stories', 'explore', 'accounts', 'direct',
+    'tv', 'about', 'developer', 'legal', 'privacy', 'language', 'checkout', 'your_activity', 'archive']);
+  const IG_CDN = /cdninstagram\.com$|fbcdn\.net$/i;
+
+  // 仅在个人主页（含 /{user}/p/... 帖子浮层）时返回用户名，其余页面（首页/探索/故事）不采集
+  function profileFromPath() {
+    const parts = location.pathname.split('/').filter(Boolean);
+    if (!parts.length) return null;
+    const name = parts[0];
+    if (RESERVED.has(name.toLowerCase())) return null;
+    if (parts[1] && !['p', 'reel', 'reels'].includes(parts[1])) return null;
+    return /^[A-Za-z0-9._]{1,30}$/.test(name) ? name : null;
+  }
+
+  // 媒体的稳定标识：CDN 路径里的文件名（含媒体 ID）。
+  // 签名参数和尺寸变体（/p640x640/、stp=...）每次会话都变，不能用 URL 整体去重。
+  function fileKey(urlString) {
+    try { return decodeURIComponent(new URL(urlString).pathname.split('/').pop()); }
+    catch { return null; }
+  }
+
+  function bestFromSrcset(img) {
+    if (!img.srcset) return img.src || null;
+    let best = null, bestW = -1;
+    for (const part of img.srcset.split(',')) {
+      const seg = part.trim().split(/\s+/);
+      if (!seg[0]) continue;
+      const d = seg[1] || '';
+      const w = d.endsWith('w') ? parseInt(d, 10) : (d.endsWith('x') ? parseFloat(d) * 1000 : 0);
+      if (w > bestW) { bestW = w; best = seg[0]; }
+    }
+    return best || img.src;
+  }
+
+  // IG 网格/时间线常给缩小版 URL。按已知规律还原全尺寸候选：
+  // 1) 删除路径中的 /pNNNxNNN/、/sNNNxNNN/ 段；2) 删除 stp 参数中的尺寸后缀；3) 删除整个 stp 参数。
+  // 签名不覆盖尺寸段，多数情况可还原；失败时服务端会回退到原始 URL。
+  function fullResCandidates(urlString) {
+    const cands = [];
+    try {
+      const url = new URL(urlString);
+      const seg = url.pathname.match(/\/[ps]\d+x\d+\//);
+      if (seg) cands.push(new URL(urlString.replace(seg[0], '/')).href);
+      const stp = url.searchParams.get('stp');
+      if (stp) {
+        if (/_[ps]\d+x\d+/i.test(stp)) {
+          const u2 = new URL(urlString);
+          u2.searchParams.set('stp', stp.replace(/_[ps]\d+x\d+/gi, ''));
+          cands.push(u2.href);
+        }
+        const u3 = new URL(urlString);
+        u3.searchParams.delete('stp');
+        cands.push(u3.href);
+      }
+    } catch {}
+    return cands;
+  }
+
+  // ─── 采集状态 ────────────────────────────────────────────────────────────
+  const seenThisSession = new Set();       // fileKey -> 防止重复处理同一媒体
+  const pendingByUser = new Map();         // username -> Map(fileKey -> item)
+  const failedCount = new Map();           // fileKey -> 连续失败次数（3 次后放弃）
+  const SENT_CAP = 3000;
+  const BATCH_MAX = 40;
+
+  const sentKey = u => 'bf_sent_' + u;
+  function loadSent(username) {
+    try { return new Set(JSON.parse(GM_getValue(sentKey(username), '[]'))); }
+    catch { return new Set(); }
+  }
+  function saveSent(username, set) {
+    const arr = [...set];
+    if (arr.length > SENT_CAP) arr.splice(0, arr.length - SENT_CAP);
+    GM_setValue(sentKey(username), JSON.stringify(arr));
+  }
+
+  // ─── 页面扫描 ────────────────────────────────────────────────────────────
+  // 从容器内第一个站内链接归属用户名（帖子卡片/浮层头部的作者链接）
+  function usernameFromContainer(container) {
+    const a = container.querySelector('a[href^="/"]');
+    if (!a) return null;
+    const parts = (a.getAttribute('href') || '').split('?')[0].split('#')[0].split('/').filter(Boolean);
+    const name = parts[0];
+    if (!name || RESERVED.has(name.toLowerCase())) return null;
+    return /^[A-Za-z0-9._]{1,30}$/.test(name) ? name : null;
+  }
+
+  function harvestImg(img, pending) {
+    if (img.closest('header')) return 0; // 头像排除
+    const rect = img.getBoundingClientRect();
+    if (rect.width > 0 && rect.width < 80) return 0; // 小图标排除
+    const src = bestFromSrcset(img);
+    if (!src || !/^https:/.test(src)) return 0;
+    try { if (!IG_CDN.test(new URL(src).hostname)) return 0; } catch { return 0; }
+    const key = fileKey(src);
+    if (!key || seenThisSession.has(key) || pending.has(key)) return 0;
+    seenThisSession.add(key);
+    pending.set(key, { key, url: src, alt: fullResCandidates(src), type: 'image' });
+    return 1;
+  }
+
+  function harvestVideo(v, pending) {
+    const src = v.currentSrc || v.src || (v.querySelector('source') && v.querySelector('source').src);
+    if (!src || !/^https:/.test(src) || src.startsWith('blob:')) return 0;
+    try { if (!IG_CDN.test(new URL(src).hostname)) return 0; } catch { return 0; }
+    const key = fileKey(src);
+    if (!key || seenThisSession.has(key) || pending.has(key)) return 0;
+    seenThisSession.add(key);
+    pending.set(key, { key, url: src, alt: [], type: 'video' });
+    return 1;
+  }
+
+  function scan() {
+    let added = 0;
+
+    // 1) 个人主页：整页媒体都归属当前用户
+    const username = profileFromPath();
+    if (username) {
+      if (!pendingByUser.has(username)) pendingByUser.set(username, new Map());
+      const pending = pendingByUser.get(username);
+      document.querySelectorAll('img[srcset], img[src]').forEach(img => { added += harvestImg(img, pending); });
+      document.querySelectorAll('video').forEach(v => { added += harvestVideo(v, pending); });
+    }
+
+    // 2) 时间线等任何页面的帖子卡片：按卡片头部作者链接归属
+    document.querySelectorAll('article').forEach(article => {
+      const owner = usernameFromContainer(article);
+      if (!owner) return;
+      if (!pendingByUser.has(owner)) pendingByUser.set(owner, new Map());
+      const pending = pendingByUser.get(owner);
+      article.querySelectorAll('img[srcset], img[src]').forEach(img => { added += harvestImg(img, pending); });
+      article.querySelectorAll('video').forEach(v => { added += harvestVideo(v, pending); });
+    });
+
+    // 3) 从时间线点开的帖子浮层（URL 无用户名）：按浮层头部作者链接归属。
+    //    卡片先于浮层处理，浮层内嵌的推荐帖子已被卡片归属，不会错记到浮层作者名下。
+    document.querySelectorAll('div[role="dialog"]').forEach(dialog => {
+      const owner = usernameFromContainer(dialog);
+      if (!owner) return;
+      if (!pendingByUser.has(owner)) pendingByUser.set(owner, new Map());
+      const pending = pendingByUser.get(owner);
+      dialog.querySelectorAll('img[srcset], img[src]').forEach(img => { added += harvestImg(img, pending); });
+      dialog.querySelectorAll('video').forEach(v => { added += harvestVideo(v, pending); });
+    });
+
+    const totalPending = [...pendingByUser.values()].reduce((n, m) => n + m.size, 0);
+    updateBadge(username, totalPending, added);
+  }
+
+  // ─── 上传 ────────────────────────────────────────────────────────────────
+  function flush() {
+    for (const [username, pending] of pendingByUser) {
+      if (!pending.size) continue;
+      const sent = loadSent(username);
+      const items = [];
+      for (const [key, item] of pending) {
+        if (!sent.has(key) && (failedCount.get(key) || 0) < 3) items.push(item);
+        if (items.length >= BATCH_MAX) break;
+      }
+      if (!items.length) continue;
+
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: GALLERY() + '/api/instagram/harvest',
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ username, items }),
+        timeout: 30000,
+        onload: res => {
+          let data = {};
+          try { data = JSON.parse(res.responseText); } catch {}
+          if (res.status === 200 && data.success) {
+            items.forEach(it => {
+              pending.delete(it.key);
+              sent.add(it.key);
+              failedCount.delete(it.key);
+            });
+            saveSent(username, sent);
+            flashBadge(`@${username} 新存 ${data.downloaded} · 已有 ${data.skipped}` +
+              (data.failed ? ` · 失败 ${data.failed}` : ''));
+          } else if (res.status === 401) {
+            items.forEach(it => failedCount.set(it.key, 3)); // 未登录：本会话不再重试
+            flashBadge('请先在浏览器登录画廊，再刷新 Instagram');
+          } else {
+            items.forEach(it => failedCount.set(it.key, (failedCount.get(it.key) || 0) + 1));
+            flashBadge(`画廊返回 ${res.status}：${data.error || '未知错误'}`);
+          }
+          updateBadge(username, [...pendingByUser.values()].reduce((n, m) => n + m.size, 0));
+        },
+        onerror: () => {
+          items.forEach(it => failedCount.set(it.key, (failedCount.get(it.key) || 0) + 1));
+          flashBadge('画廊未连接（' + GALLERY() + '）');
+        },
+        ontimeout: () => {
+          items.forEach(it => failedCount.set(it.key, (failedCount.get(it.key) || 0) + 1));
+          flashBadge('画廊响应超时');
+        },
+      });
+    }
+  }
+
+  // ─── 状态徽章 ────────────────────────────────────────────────────────────
+  const badge = document.createElement('div');
+  badge.style.cssText = [
+    'position:fixed', 'bottom:14px', 'left:14px', 'z-index:2147483647',
+    'padding:6px 12px', 'border-radius:20px', 'background:rgba(20,20,28,.82)',
+    'color:#e8e6f0', 'font-size:12px', 'font-family:system-ui,sans-serif',
+    'box-shadow:0 2px 10px rgba(0,0,0,.35)', 'cursor:default', 'user-select:none',
+    'backdrop-filter:blur(6px)', 'transition:opacity .4s',
+  ].join(';');
+  document.documentElement.appendChild(badge);
+
+  let flashTimer = null;
+  function updateBadge(username, pendingCount, added) {
+    if (flashTimer) return; // 闪现消息优先
+    if (!username) {
+      if (pendingCount > 0) {
+        badge.textContent = `📥 时间线 · 待同步 ${pendingCount}`;
+      } else {
+        let host = GALLERY();
+        try { host = new URL(GALLERY()).host; } catch {}
+        badge.textContent = `📥 待机 → ${host}（刷时间线或进主页自动采集）`;
+      }
+      return;
+    }
+    badge.textContent = `📥 @${username}` +
+      (pendingCount ? ` 待同步 ${pendingCount}` : ' 已全部同步') +
+      (added ? ` (+${added})` : '');
+  }
+  function flashBadge(text) {
+    badge.textContent = '📥 ' + text;
+    badge.style.opacity = '1';
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => { flashTimer = null; }, 4000);
+  }
+
+  // ─── 定时器 ──────────────────────────────────────────────────────────────
+  setInterval(scan, 1500);
+  setInterval(flush, 5000);
+  scan();
+})();

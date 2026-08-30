@@ -282,27 +282,72 @@ function requireAuth(req, res, config) {
   return false;
 }
 
-// ─── Download list (favorites → daily download) ──────────────────────────
+// ─── Instagram 浏览同步（油猴脚本回调）────────────────────────────────────
+// 油猴脚本在用户正常浏览 Instagram 时，把页面上已加载的 CDN 媒体地址回传到
+// 这里，由服务端下载进 instagram-scraped/{username}/，画廊即可放映。
+// 稳定文件名（CDN 路径中的媒体 ID）既是去重键，也是画廊扫描的文件名。
 
-const DOWNLOAD_LIST_PATH = path.join(os.homedir(), '.blissful-faraday-daily-download.json');
+const INSTAGRAM_SCRAPE_DIR = path.join(os.homedir(), 'Pictures', 'instagram-scraped');
+const HARVEST_MAX_BYTES = 500 * 1024 * 1024;
+// 只允许从 Instagram CDN 下载，另放行 localhost 供本地测试
+const HARVEST_ALLOWED_HOSTS = ['cdninstagram.com', 'fbcdn.net', 'localhost', '127.0.0.1'];
 
-function loadDownloadList() {
+function isHarvestHostAllowed(urlString) {
   try {
-    if (fs.existsSync(DOWNLOAD_LIST_PATH)) {
-      return JSON.parse(fs.readFileSync(DOWNLOAD_LIST_PATH, 'utf8'));
-    }
-  } catch (err) {
-    console.warn(`[DownloadList] Failed to load: ${err.message}`);
-  }
-  return [];
+    const h = new URL(urlString).hostname.toLowerCase();
+    return HARVEST_ALLOWED_HOSTS.some(d => h === d || h.endsWith('.' + d));
+  } catch { return false; }
 }
 
-function saveDownloadList(list) {
+// 按文件真实内容的魔数判断扩展名，避免 CDN 返回格式与 URL 后缀不符
+function sniffExt(buffer) {
+  if (buffer.length > 3 && buffer[0] === 0xff && buffer[1] === 0xd8) return '.jpg';
+  if (buffer.length > 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return '.png';
+  if (buffer.length > 4 && buffer.toString('ascii', 0, 4) === 'GIF8') return '.gif';
+  if (buffer.length > 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return '.webp';
+  if (buffer.length > 8 && buffer.toString('ascii', 4, 8) === 'ftyp') return '.mp4';
+  if (buffer.length > 4 && buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) return '.webm';
+  return null;
+}
+
+function harvestFilename(urlString, type) {
   try {
-    fs.writeFileSync(DOWNLOAD_LIST_PATH, JSON.stringify(list, null, 2), 'utf8');
+    const u = new URL(urlString);
+    let base = decodeURIComponent(u.pathname.split('/').pop() || '');
+    base = base.replace(/[^\w.\-]+/g, '_').slice(0, 120);
+    if (!/\.(jpe?g|png|gif|webp|bmp|svg|mp4|webm)$/i.test(base)) {
+      base += type === 'video' ? '.mp4' : '.jpg';
+    }
+    return base;
+  } catch { return null; }
+}
+
+// 下载到 tmpPath（隐藏文件 + .part 后缀，画廊扫描会跳过点文件，半成品不会出现在图集里）
+async function harvestDownload(urlString, tmpPath) {
+  const res = await fetch(urlString, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+      Referer: 'https://www.instagram.com/',
+    },
+    redirect: 'follow',
+  });
+  if (!res.ok || !res.body) return false;
+  const out = fs.createWriteStream(tmpPath);
+  try {
+    let size = 0;
+    for await (const chunk of res.body) {
+      size += chunk.length;
+      if (size > HARVEST_MAX_BYTES) throw new Error('文件超过大小上限');
+      if (!out.write(chunk)) await new Promise(r => out.once('drain', r));
+    }
   } catch (err) {
-    console.warn(`[DownloadList] Failed to save: ${err.message}`);
+    try { res.body.cancel?.(); } catch {}
+    try { out.destroy(); } catch {}
+    try { fs.unlinkSync(tmpPath); } catch {}
+    throw err;
   }
+  await new Promise(resolve => out.end(resolve));
+  return true;
 }
 
 // ─── API middleware factory ───────────────────────────────────────────────
@@ -313,13 +358,10 @@ export function createApiHandler() {
     const authConfig = loadAuthConfig();
 
     // ── Global auth interceptor ────────────────────────────────────────
-    // GET /api/download-list is whitelisted (frontend loads it pre-login),
-    // but the mutating POST endpoints (add/remove) require auth.
     if (url.pathname.startsWith('/api/') &&
         !url.pathname.startsWith('/api/auth/') &&
         url.pathname !== '/api/cache/clear' &&
-        url.pathname !== '/api/collection/info' &&
-        !(url.pathname.startsWith('/api/download-list') && req.method === 'GET')) {
+        url.pathname !== '/api/collection/info') {
       if (authConfig.enabled && !getSession(req, authConfig)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'UNAUTHORIZED' }));
@@ -510,27 +552,6 @@ export function createApiHandler() {
       logEvent(authConfig, '清空了审计日志', ip);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true }));
-      return;
-    }
-
-    // ── GET /api/lan-ip ─────────────────────────────────────────────────
-    if (url.pathname === '/api/lan-ip') {
-      try {
-        const interfaces = os.networkInterfaces();
-        let ip = '127.0.0.1';
-        for (const ifName in interfaces) {
-          const addrs = interfaces[ifName];
-          for (const addr of addrs) {
-            if (addr.family === 'IPv4' && !addr.internal) { ip = addr.address; break; }
-          }
-          if (ip !== '127.0.0.1') break;
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ip }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
-      }
       return;
     }
 
@@ -946,6 +967,106 @@ export function createApiHandler() {
       return;
     }
 
+    // ── POST /api/instagram/harvest ─────────────────────────────────────
+    // Body: { username, items: [{ url, type?, alt? }] }
+    // url 为页面上实际加载的地址；alt 为脚本按 IG CDN 规律还原的全尺寸候选地址，
+    // 服务端按 alt → url 顺序尝试，全部失败才计 failed。
+    if (url.pathname === '/api/instagram/harvest' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => body += c.toString());
+      req.on('end', async () => {
+        try {
+          const data = JSON.parse(body);
+          const username = (data.username || '').trim();
+          if (username === '.' || username === '..' || !/^[A-Za-z0-9._]{1,30}$/.test(username)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'username 格式非法' }));
+            return;
+          }
+          const targetDir = path.join(INSTAGRAM_SCRAPE_DIR, username);
+          if (!isPathWithin(path.resolve(targetDir), path.resolve(INSTAGRAM_SCRAPE_DIR))) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Access Denied' }));
+            return;
+          }
+          const rawItems = Array.isArray(data.items) ? data.items : [];
+          const items = rawItems.slice(0, 60).filter(it => it && typeof it.url === 'string');
+          if (!items.length) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'items 为空' }));
+            return;
+          }
+
+          fs.mkdirSync(targetDir, { recursive: true });
+          let downloaded = 0, skipped = 0, failed = 0;
+
+          for (const item of items) {
+            try {
+              const candidates = [...(Array.isArray(item.alt) ? item.alt : []), item.url]
+                .filter(u => typeof u === 'string' && isHarvestHostAllowed(u));
+              if (!candidates.length) { failed++; continue; }
+
+              const base = harvestFilename(item.url, item.type);
+              if (!base) { failed++; continue; }
+              const finalPath0 = path.join(targetDir, base);
+              if (fs.existsSync(finalPath0)) { skipped++; continue; }
+
+              const tmpPath = path.join(targetDir, '.' + base + '.part');
+              let ok = false;
+              for (const candidate of candidates) {
+                try { ok = await harvestDownload(candidate, tmpPath); } catch { ok = false; }
+                if (ok) break;
+              }
+              if (!ok) {
+                try { fs.unlinkSync(tmpPath); } catch {}
+                failed++;
+                continue;
+              }
+
+              // 校正扩展名：CDN 常返回与 URL 后缀不符的格式（如 webp 冒充 jpg）
+              let finalPath = finalPath0;
+              try {
+                const head = Buffer.alloc(16);
+                const fd = fs.openSync(tmpPath, 'r');
+                fs.readSync(fd, head, 0, 16, 0);
+                fs.closeSync(fd);
+                const real = sniffExt(head);
+                const cur = path.extname(finalPath).toLowerCase();
+                if (real && real !== cur && !(cur === '.jpeg' && real === '.jpg')) {
+                  finalPath = path.join(targetDir, path.basename(finalPath, cur) + real);
+                }
+              } catch {}
+
+              if (fs.existsSync(finalPath)) {
+                fs.unlinkSync(tmpPath);
+                skipped++;
+                continue;
+              }
+              fs.renameSync(tmpPath, finalPath);
+              downloaded++;
+            } catch { failed++; }
+          }
+
+          // 图集元数据，/api/collection/info 会读取并在 UI 显示 full_name
+          try {
+            const infoPath = path.join(targetDir, '.collection-info.json');
+            if (!fs.existsSync(infoPath)) {
+              fs.writeFileSync(infoPath, JSON.stringify({
+                username, full_name: null, source: 'browser-harvest', updatedAt: Date.now(),
+              }, null, 2), 'utf8');
+            }
+          } catch {}
+
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ success: true, username, downloaded, skipped, failed, total: items.length }));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
     // ── POST /api/cache/clear ───────────────────────────────────────────
     if (url.pathname === '/api/cache/clear' && req.method === 'POST') {
       try {
@@ -959,66 +1080,6 @@ export function createApiHandler() {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
-      return;
-    }
-
-    // ── GET /api/download-list ──────────────────────────────────────────
-    if (url.pathname === '/api/download-list' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ list: loadDownloadList() }));
-      return;
-    }
-
-    // ── POST /api/download-list/add ─────────────────────────────────────
-    if (url.pathname === '/api/download-list/add' && req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk.toString());
-      req.on('end', () => {
-        try {
-          const data = JSON.parse(body);
-          const username = (data.username || '').trim();
-          if (!username) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'username is required' }));
-            return;
-          }
-          const list = loadDownloadList();
-          if (!list.includes(username)) {
-            list.push(username);
-            saveDownloadList(list);
-          }
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: true, list }));
-        } catch (err) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err.message }));
-        }
-      });
-      return;
-    }
-
-    // ── POST /api/download-list/remove ──────────────────────────────────
-    if (url.pathname === '/api/download-list/remove' && req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk.toString());
-      req.on('end', () => {
-        try {
-          const data = JSON.parse(body);
-          const username = (data.username || '').trim();
-          if (!username) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'username is required' }));
-            return;
-          }
-          const list = loadDownloadList().filter(u => u !== username);
-          saveDownloadList(list);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: true, list }));
-        } catch (err) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err.message }));
-        }
-      });
       return;
     }
 

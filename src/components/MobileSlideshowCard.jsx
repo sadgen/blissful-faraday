@@ -25,7 +25,6 @@ export default function MobileSlideshowCard({
   imageSort = 'name',
   fetchCollections,
   onRequestNextCollection,
-  downloadList = [],
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [images, setImages] = useState([]);
@@ -37,8 +36,6 @@ export default function MobileSlideshowCard({
   const [progressBarReset, setProgressBarReset] = useState(false);
   // Overlay controls
   const [collectionInfo, setCollectionInfo] = useState(null);
-  const [isFavorite, setIsFavorite] = useState(false);
-  const [favLoading, setFavLoading] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const videoFileNamesRef = useRef(new Set());
@@ -87,30 +84,6 @@ export default function MobileSlideshowCard({
       .catch(() => { if (!cancelled) setCollectionInfo(null); });
     return () => { cancelled = true; };
   }, [currentCollName]);
-
-  // Check if current collection is in daily download list (P1: use parent-fetched list, no per-tile fetch)
-  useEffect(() => {
-    setIsFavorite(downloadList.includes(currentCollName));
-  }, [downloadList, currentCollName]);
-
-  const toggleFavorite = useCallback(async () => {
-    if (favLoading || !currentCollName) return;
-    setFavLoading(true);
-    try {
-      const endpoint = isFavorite ? '/api/download-list/remove' : '/api/download-list/add';
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: currentCollName })
-      });
-      const data = await res.json();
-      if (data.success) setIsFavorite(!isFavorite);
-    } catch (err) {
-      console.error('Failed to toggle favorite:', err);
-    } finally {
-      setFavLoading(false);
-    }
-  }, [currentCollName, isFavorite, favLoading]);
 
   const handleDelete = useCallback(async () => {
     if (!window.confirm(`确定要删除图集 "${currentCollName}" 吗？\n\n这将永久删除该文件夹及其所有图片。`)) return;
@@ -896,17 +869,6 @@ export default function MobileSlideshowCard({
               <span style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.6)', marginRight: 4, flexShrink: 0 }}>
                 {activeIdx + 1}/{images.length}
               </span>
-              <button
-                className="tile-mini-btn"
-                onClick={toggleFavorite}
-                disabled={favLoading}
-                title={isFavorite ? '从每日下载列表中移除' : '加入每日下载列表'}
-                style={{ color: isFavorite ? '#fbbf24' : 'rgba(255,255,255,0.7)', opacity: favLoading ? 0.5 : 1, flexShrink: 0 }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill={isFavorite ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2">
-                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-                </svg>
-              </button>
               <button
                 className="tile-mini-btn"
                 onClick={handleDelete}

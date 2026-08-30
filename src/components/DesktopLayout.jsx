@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import { 
   RefreshCw, FolderOpen, Save, X, Settings, Image,
-  AlertTriangle, Trash2, Sparkles, History, Shield, RotateCcw, Download
+  AlertTriangle, Trash2, Sparkles, History, Shield, RotateCcw
 } from 'lucide-react';
 import SlideshowTile from './SlideshowTile';
 import ErrorBoundary from './ErrorBoundary';
@@ -59,10 +59,6 @@ export default function DesktopLayout({
   handleClearCache,
   isClearingCache,
   gridConfig,
-  // LAN connection modal support
-  showLanModal,
-  setShowLanModal,
-  lanIp,
   directoryHistory = [],
   onRemoveHistoryItem,
   // Security props
@@ -87,40 +83,6 @@ export default function DesktopLayout({
   const historyRef = React.useRef(null);
   const [activeTab, setActiveTab] = React.useState('storage');
   const [mountedTiles, setMountedTiles] = React.useState(0);
-
-  // Daily download list state
-  const [downloadList, setDownloadList] = React.useState([]);
-  const [newDownloadUser, setNewDownloadUser] = React.useState('');
-  const [showFavoritesOnly, setShowFavoritesOnly] = React.useState(false);
-  const [showUnmanagedOnly, setShowUnmanagedOnly] = React.useState(false);
-
-  const handleToggleFavorites = () => {
-    setShowFavoritesOnly(prev => !prev);
-    setShowUnmanagedOnly(false);
-  };
-  const handleToggleUnmanaged = () => {
-    setShowUnmanagedOnly(prev => !prev);
-    setShowFavoritesOnly(false);
-  };
-
-  const fetchDownloadList = React.useCallback(async () => {
-    try {
-      const res = await fetch('/api/download-list');
-      const data = await res.json();
-      if (data.list) setDownloadList(data.list);
-    } catch (err) {
-      console.error('Failed to fetch download list:', err);
-    }
-  }, []);
-
-  // Fetch download list on mount and auto-refresh when settings opens
-  React.useEffect(() => {
-    fetchDownloadList();
-  }, [fetchDownloadList]);
-
-  React.useEffect(() => {
-    if (isSettingsOpen) fetchDownloadList();
-  }, [isSettingsOpen, fetchDownloadList]);
 
   // Mount all tiles immediately on initial load
   React.useEffect(() => {
@@ -283,26 +245,11 @@ export default function DesktopLayout({
 
           {/* Filter tiles */}
           {(() => {
-            let filtered;
-            let tileCollections;
-            let tileDisplayedCollections;
-            if (showFavoritesOnly) {
-              filtered = collections.filter(c => downloadList.includes(c));
-              tileCollections = filtered;
-              tileDisplayedCollections = filtered.slice(0, activeTileCount);
-            } else if (showUnmanagedOnly) {
-              filtered = collections.filter(c =>
-                !downloadList.includes(c) && !(deletedAccounts || []).includes(c)
-              );
-              tileCollections = filtered;
-              tileDisplayedCollections = filtered.slice(0, activeTileCount);
-            } else {
-              filtered = displayedCollections;
-              tileCollections = collections;
-              tileDisplayedCollections = displayedCollections;
-            }
-            // Initialize/reset remaining queue when filter/sort/collections change
-            const filterKey = `${showFavoritesOnly}:${showUnmanagedOnly}:${collections.length}:${sortMethod}:${dirResetKey}:${activeTileCount}`;
+            const filtered = displayedCollections;
+            const tileCollections = collections;
+            const tileDisplayedCollections = displayedCollections;
+            // Initialize/reset remaining queue when sort/collections change
+            const filterKey = `${collections.length}:${sortMethod}:${dirResetKey}:${activeTileCount}`;
             if (filterKey !== prevFilterKeyRef.current) {
               prevFilterKeyRef.current = filterKey;
               remainingQueueRef.current = filtered.slice(activeTileCount);
@@ -343,7 +290,6 @@ export default function DesktopLayout({
                     isOverlapping={overlappingTiles.has(index)}
                     intersections={tileIntersections[index] || []}
                     isSyncMode={isSyncMode}
-                    downloadList={downloadList}
                     syncTrigger={syncTrigger}
                     videoSpeed={videoSpeed}
                     imageSort={imageSort}
@@ -428,17 +374,12 @@ export default function DesktopLayout({
           zoomSliderRef={zoomSliderRef}
           isHUDpinned={isHUDpinned}
           setIsHUDpinned={setIsHUDpinned}
-          onOpenLan={lanIp ? () => setShowLanModal(true) : null}
           isSyncMode={isSyncMode}
           setIsSyncMode={setIsSyncMode}
           videoSpeed={videoSpeed}
           setVideoSpeed={setVideoSpeed}
           imageSort={imageSort}
           setImageSort={setImageSort}
-          showFavoritesOnly={showFavoritesOnly}
-          setShowFavoritesOnly={setShowFavoritesOnly}
-          showUnmanagedOnly={showUnmanagedOnly}
-          setShowUnmanagedOnly={setShowUnmanagedOnly}
         />
       )}
 
@@ -480,14 +421,6 @@ export default function DesktopLayout({
           >
             <Shield size={14} />
             安全中心
-          </button>
-          <button
-            type="button"
-            className={`settings-tab-btn ${activeTab === 'daily-download' ? 'active' : ''}`}
-            onClick={() => setActiveTab('daily-download')}
-          >
-            <Download size={14} />
-            每日下载
           </button>
         </div>
 
@@ -720,74 +653,6 @@ export default function DesktopLayout({
               )}
             </div>
           </div>
-        ) : activeTab === 'daily-download' ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, flex: 1, overflowY: 'auto', paddingRight: 4, marginTop: 10 }}>
-            <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block' }}>
-              每日下载列表 — 每天凌晨 2:00 自动下载以下账号的最新图片
-            </label>
-            {downloadList.length === 0 ? (
-              <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', padding: '16px 0', textAlign: 'center' }}>
-                列表为空。在播放窗口中点击 ⭐ 按钮添加账号，或在下方的输入框中手动添加。
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {downloadList.map((username, idx) => (
-                  <div key={idx} style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '8px 10px', background: 'rgba(255,255,255,0.04)',
-                    borderRadius: 6, fontSize: '0.8rem'
-                  }}>
-                    <span>@{username}</span>
-                    <button
-                      type="button"
-                      className="tile-mini-btn"
-                      onClick={async () => {
-                        await fetch('/api/download-list/remove', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ username })
-                        });
-                        fetchDownloadList();
-                      }}
-                      title="移除"
-                      style={{ color: '#ef4444' }}
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              <input
-                type="text"
-                className="glass-input"
-                value={newDownloadUser}
-                onChange={(e) => setNewDownloadUser(e.target.value)}
-                placeholder="输入 Instagram 用户名手动添加"
-                style={{ flex: 1, fontSize: '0.8rem' }}
-              />
-              <button
-                type="button"
-                className="glass-button active"
-                disabled={!newDownloadUser.trim()}
-                onClick={async () => {
-                  const name = newDownloadUser.trim();
-                  if (!name) return;
-                  await fetch('/api/download-list/add', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: name })
-                  });
-                  setNewDownloadUser('');
-                  fetchDownloadList();
-                }}
-                style={{ padding: '0 14px', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
-              >
-                添加
-              </button>
-            </div>
-          </div>
         ) : (
           <div style={{ flex: 1, overflowY: 'auto', paddingRight: 4, marginTop: 10 }}>
             <SecurityCenter
@@ -801,88 +666,6 @@ export default function DesktopLayout({
           </div>
         )}
       </div>
-
-      {/* LAN Connect QR Modal */}
-      {showLanModal && lanIp && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(0,0,0,0.8)',
-          backdropFilter: 'blur(10px)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 99999,
-          animation: 'fadeIn 0.25s ease'
-        }}>
-          <div className="glass-panel" style={{
-            padding: 30,
-            maxWidth: 380,
-            width: '90%',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 20,
-            position: 'relative'
-          }}>
-            <button 
-              style={{
-                position: 'absolute',
-                top: 15,
-                right: 15,
-                background: 'none',
-                border: 'none',
-                color: 'var(--text-secondary)',
-                cursor: 'pointer'
-              }}
-              onClick={() => setShowLanModal(false)}
-            >
-              <X size={20} />
-            </button>
-            
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 'bold', color: '#fff', textAlign: 'center', letterSpacing: '0.05em' }}>
-              手机连入播放器
-            </h3>
-            
-            <div style={{
-              background: 'var(--bg-darker)',
-              padding: 20,
-              borderRadius: 12,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              border: '1px solid var(--glass-border)'
-            }}>
-              <span style={{
-                fontSize: '0.85rem',
-                color: 'var(--text-primary)',
-                fontFamily: 'monospace',
-                wordBreak: 'break-all',
-                textAlign: 'center'
-              }}>
-                http://{lanIp}:3000/
-              </span>
-            </div>
-            
-            <div style={{ textAlign: 'center', width: '100%' }}>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: 6 }}>
-                请确保您的手机与电脑连接在<strong>同一个 Wi-Fi (局域网)</strong>。
-              </span>
-            </div>
-
-            <button 
-              className="glass-button active"
-              style={{ width: '100%', justifyContent: 'center' }}
-              onClick={() => {
-                navigator.clipboard.writeText(`http://${lanIp}:3000/`);
-                alert('链接已复制到剪贴板！');
-              }}
-            >
-              复制连接
-            </button>
-          </div>
-        </div>
-      )}
 
     </div>
   );

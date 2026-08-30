@@ -159,10 +159,8 @@ export default function App() {
     const [sortMethod, setSortMethod] = useState(savedConfig?.sortMethod || 'random');
   const [randomTrigger, setRandomTrigger] = useState(0);
   
-  // Viewport detection & LAN IP states
+  // Viewport detection
   const [isMobile, setIsMobile] = useState(false);
-  const [lanIp, setLanIp] = useState('');
-  const [showLanModal, setShowLanModal] = useState(false);
 
   // Authentication & Security state
   const [adminConfig, setAdminConfig] = useState(null);
@@ -450,20 +448,6 @@ export default function App() {
       }
     }
   }, [isMobile, tileCount]);
-
-  useEffect(() => {
-    safeFetchJSON('/api/lan-ip')
-      .then(data => {
-        if (data.ip) setLanIp(data.ip);
-      })
-      .catch(err => {
-        if (err.isStaticFallback) {
-          console.info('LAN sync module is offline (running in static mode).');
-        } else {
-          console.warn('Failed to fetch LAN IP:', err.message || err);
-        }
-      });
-  }, []);
 
   // Save configuration to localStorage
   useEffect(() => {
@@ -1012,7 +996,6 @@ export default function App() {
           handleClearCache={handleClearCache}
           isClearingCache={isClearingCache}
           gridConfig={gridConfig}
-          lanIp={lanIp}
           directoryHistory={directoryHistory}
           onRemoveHistoryItem={handleRemoveHistoryItem}
           adminConfig={adminConfig}
@@ -1089,9 +1072,6 @@ export default function App() {
       handleClearCache={handleClearCache}
       isClearingCache={isClearingCache}
       gridConfig={gridConfig}
-      showLanModal={showLanModal}
-      setShowLanModal={setShowLanModal}
-      lanIp={lanIp}
       directoryHistory={directoryHistory}
       onRemoveHistoryItem={handleRemoveHistoryItem}
       adminConfig={adminConfig}

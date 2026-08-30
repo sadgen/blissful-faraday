@@ -139,7 +139,6 @@ export default function MobileLayout({
   handleClearCache,
   isClearingCache,
   gridConfig,
-  lanIp,
   directoryHistory = [],
   onRemoveHistoryItem,
   // Security props
@@ -159,9 +158,6 @@ export default function MobileLayout({
   deletedAccounts = [],
   onRestoreAccount,
 }) {
-  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
-  const [showUnmanagedOnly, setShowUnmanagedOnly] = useState(false);
-  const [downloadList, setDownloadList] = useState([]);
   const [showZoomSlider, setShowZoomSlider] = useState(false);
   const sliderTimeoutRef = useRef(null);
 
@@ -178,45 +174,8 @@ export default function MobileLayout({
     return null;
   }, []);
 
-  const fetchDownloadList = React.useCallback(async () => {
-    try {
-      const res = await fetch('/api/download-list');
-      const data = await res.json();
-      if (data.list) setDownloadList(data.list);
-    } catch (err) {
-      console.error('Failed to fetch download list:', err);
-    }
-  }, []);
-
-  React.useEffect(() => {
-    fetchDownloadList();
-  }, [fetchDownloadList]);
-
-  React.useEffect(() => {
-    if (isSettingsOpen) fetchDownloadList();
-  }, [isSettingsOpen, fetchDownloadList]);
-
-  // Apply filters: favorites or unmanaged
-  const filteredCollections = React.useMemo(() => {
-    if (showFavoritesOnly) {
-      return downloadList.filter(c => collections.includes(c));
-    }
-    if (showUnmanagedOnly) {
-      return collections.filter(c =>
-        !downloadList.includes(c) && !(deletedAccounts || []).includes(c)
-      );
-    }
-    return displayedCollections;
-  }, [showFavoritesOnly, showUnmanagedOnly, downloadList, collections, displayedCollections, deletedAccounts]);
-
-  // Collections list to pass to tiles — filtered when a filter is active so getNextUniqueCollection only picks from valid items
-  const tileCollections = React.useMemo(() => {
-    if (showFavoritesOnly) return collections.filter(c => downloadList.includes(c));
-    if (showUnmanagedOnly) return collections.filter(c =>
-      !downloadList.includes(c) && !(deletedAccounts || []).includes(c)
-    );
-    return collections;
-  }, [showFavoritesOnly, showUnmanagedOnly, downloadList, collections, deletedAccounts]);
+  const filteredCollections = displayedCollections;
+  const tileCollections = collections;
 
   const triggerZoomSliderBriefly = () => {
     setShowZoomSlider(true);
@@ -317,17 +276,17 @@ export default function MobileLayout({
     return intersections;
   }, [activeTileCount, zoomScale]);
 
-  // Filter collections to display based on active tile count and favorites filter
+  // Collections to display based on active tile count
   const renderCollections = filteredCollections.slice(0, activeTileCount);
 
-  // Initialize/reset remaining queue when filter/collections/sort change
+  // Initialize/reset remaining queue when collections/sort change
   React.useEffect(() => {
-    const filterKey = `${showFavoritesOnly}:${showUnmanagedOnly}:${collections.length}:${sortMethod}:${dirResetKey}:${activeTileCount}`;
+    const filterKey = `${collections.length}:${sortMethod}:${dirResetKey}:${activeTileCount}`;
     if (filterKey !== prevFilterKeyRef.current) {
       prevFilterKeyRef.current = filterKey;
       remainingQueueRef.current = filteredCollections.slice(activeTileCount);
     }
-  }, [showFavoritesOnly, showUnmanagedOnly, collections, sortMethod, dirResetKey, activeTileCount, filteredCollections]);
+  }, [collections, sortMethod, dirResetKey, activeTileCount, filteredCollections]);
 
   // Responsive class for active tile counts
   let gridClass = 'mobile-grid-2';
@@ -423,7 +382,6 @@ export default function MobileLayout({
                     syncTrigger={syncTrigger}
                     videoSpeed={videoSpeed}
                     imageSort={imageSort}
-                    downloadList={downloadList}
                     fetchCollections={fetchCollections}
                     onRequestNextCollection={consumeNext}
                   />
@@ -525,12 +483,6 @@ export default function MobileLayout({
         setVideoSpeed={setVideoSpeed}
         imageSort={imageSort}
         setImageSort={setImageSort}
-        showFavoritesOnly={showFavoritesOnly}
-        setShowFavoritesOnly={setShowFavoritesOnly}
-        showUnmanagedOnly={showUnmanagedOnly}
-        setShowUnmanagedOnly={setShowUnmanagedOnly}
-        downloadList={downloadList}
-        fetchDownloadList={fetchDownloadList}
       />
 
       {/* 5. Floating Vertical Zoom Slider on Right Screen Edge */}
