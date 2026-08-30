@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      0.5.0
+// @version      0.6.0
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。只收集页面上已加载的媒体地址，不产生额外对 IG 的请求。
 // @match        https://www.instagram.com/*
 // @run-at       document-idle
@@ -258,7 +258,8 @@
   // 播完（或切走 30 秒后）自动入库为 webm，画质等同播放画面。
   let blobBusy = false;
 
-  function uploadVideoBlob(username, blob, onDone) {
+  function uploadVideoBlob(username, blob, onDone, opts) {
+    const o = opts || {};
     const reader = new FileReader();
     reader.onerror = () => onDone('🎬 视频读取失败');
     reader.onload = () => {
@@ -266,12 +267,12 @@
         method: 'POST',
         url: GALLERY() + '/api/instagram/harvest-blob',
         headers: { 'Content-Type': 'application/json' },
-        data: JSON.stringify({ username, data: reader.result }),
+        data: JSON.stringify({ username, data: reader.result, debug: o.debug || undefined }),
         timeout: 180000,
         onload: res => {
           let d = {}; try { d = JSON.parse(res.responseText); } catch {}
           if (res.status === 200 && d.success) {
-            if (d.downloaded) onDone(`🎬 视频已存 @${username}（${d.sizeMB} MB）`);
+            if (d.downloaded) onDone(`${o.okPrefix || '🎬 视频已存'} @${username}（${d.sizeMB} MB）`);
             else onDone('🎬 视频内容已存在，跳过');
           } else if (res.status === 401) onDone('请先登录画廊，视频才能入库');
           else onDone(`🎬 视频入库失败 ${res.status}：${d.error || '未知错误'}`);
@@ -294,7 +295,7 @@
       const u = new URL(urlStr, location.href);
       if (!VIDEO_HOST.test(u.hostname) || (status !== 200 && status !== 206)) return;
       const ct = getHeader('content-type') || '';
-      if (!ct.startsWith('video/') && !ct.includes('octet-stream') && !/\/o1\//.test(u.pathname)) return;
+      if (!ct.startsWith('video/') && !ct.includes('octet-stream')) return;
       const key = u.origin + u.pathname;
       let g = segGroups.get(key);
       if (!g) {
@@ -329,7 +330,7 @@
           try {
             const raw = args[0];
             const u = typeof raw === 'string' ? raw : (raw && raw.url) || '';
-            if (VIDEO_HOST.test(u) && /\/o1\//.test(u)) {
+            if (VIDEO_HOST.test(u)) {
               result.then(res => {
                 try {
                   const ct = res.headers.get('content-type') || '';
@@ -356,7 +357,7 @@
           xhr.addEventListener('load', () => {
             try {
               const u = xhr.__bfUrl || '';
-              if (VIDEO_HOST.test(u) && /\/o1\//.test(u) && xhr.responseType === 'arraybuffer') {
+              if (VIDEO_HOST.test(u) && xhr.responseType === 'arraybuffer') {
                 const ct = xhr.getResponseHeader('content-type') || '';
                 if (ct.startsWith('video/') || ct.includes('octet-stream')) {
                   noteSegResponse(new URL(u, location.href).href, xhr.status, n => xhr.getResponseHeader(n), xhr.response);
@@ -402,20 +403,34 @@
     return best;
   }
 
+  function tapStats() {
+    const now = Date.now();
+    let groups = 0, bytes = 0;
+    for (const g of segGroups.values()) {
+      if (now - g.lastSeen > 120000) continue;
+      groups++;
+      for (const c of g.chunks.values()) bytes += c.data.byteLength;
+    }
+    return { groups, bytes };
+  }
+
   // MSE 分片拼装优先；拼不全则用记录到的 URL 做一次缓存优先的完整 GET；
   // 仍失败才退级实时录制（onFail）。
   function trySegFullCapture(username, onFail) {
+    const debug = tapStats();
     const g = bestSegGroup();
     if (!g) { onFail(); return; }
     const assembled = assembleSegGroup(g);
     if (assembled && assembled.byteLength > 65536) {
-      uploadVideoBlob(username, new Blob([assembled], { type: g.ct || 'video/mp4' }), msg => flashBadge(msg));
+      uploadVideoBlob(username, new Blob([assembled], { type: g.ct || 'video/mp4' }),
+        msg => flashBadge(msg), { okPrefix: '🎬 分片拼装完整视频已存', debug });
       return;
     }
     const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch)
       ? unsafeWindow.fetch.bind(unsafeWindow) : window.fetch.bind(window);
     pageFetch(g.url).then(r => r.blob()).then(b => {
-      if (b && b.size > 65536) uploadVideoBlob(username, b, msg => flashBadge(msg));
+      if (b && b.size > 65536) uploadVideoBlob(username, b, msg => flashBadge(msg),
+        { okPrefix: '🎬 完整视频已存（缓存补全）', debug });
       else onFail();
     }).catch(onFail);
   }
@@ -453,7 +468,7 @@
         const blob = new Blob(chunks, { type: 'video/webm' });
         if (blob.size < 65536) { flashBadge('🎬 录制内容过短，未入库'); return; }
         flashBadge('🎬 录制完成，视频入库中...');
-        uploadVideoBlob(username, blob, msg => flashBadge(msg));
+        uploadVideoBlob(username, blob, msg => flashBadge(msg), { okPrefix: '🎬 录制视频已存' });
       };
       videoEl.addEventListener('ended', stopOnce, { once: true });
       // 暂停（含缓冲）超过 30 秒视为看完，落库已录部分

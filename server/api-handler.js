@@ -1140,7 +1140,9 @@ export function createApiHandler() {
             }
           } catch {}
           const sizeMB = (buf.length / 1024 / 1024).toFixed(1);
-          console.log(`[Harvest-Blob] @${username}: ${path.basename(finalPath)} (${sizeMB} MB)`);
+          const dbg = data.debug && typeof data.debug === 'object'
+            ? ` [taps=${data.debug.groups || 0} 组/${(data.debug.bytes || 0) / 1024 / 1024 > 0.01 ? ((data.debug.bytes || 0) / 1024 / 1024).toFixed(1) + 'MB' : (data.debug.bytes || 0) + 'B'}]` : '';
+          console.log(`[Harvest-Blob] @${username}: ${path.basename(finalPath)} (${sizeMB} MB)${dbg}`);
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ success: true, username, downloaded: 1, skipped: 0, sizeMB }));
         } catch (err) {
