@@ -1018,6 +1018,7 @@ export function createApiHandler() {
                 if (ok) break;
               }
               if (!ok) {
+                console.warn(`[Harvest] 下载失败 @${username}: ${base} ← ${candidates[0]}`);
                 try { fs.unlinkSync(tmpPath); } catch {}
                 failed++;
                 continue;
@@ -1057,9 +1058,88 @@ export function createApiHandler() {
             }
           } catch {}
 
+          console.log(`[Harvest] @${username}: 成功 ${downloaded} · 跳过 ${skipped} · 失败 ${failed} / 共 ${items.length}`);
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ success: true, username, downloaded, skipped, failed, total: items.length }));
         } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // ── POST /api/instagram/harvest-blob ────────────────────────────────
+    // 流式视频（blob: 播放源）没有可直连的 mp4 地址，由油猴脚本把浏览器
+    // 已加载的视频内容以 base64 中继到这里。按内容 sha1 去重。
+    // Body: { username, data: 'data:video/mp4;base64,...' }
+    if (url.pathname === '/api/instagram/harvest-blob' && req.method === 'POST') {
+      let body = '';
+      let bodySize = 0;
+      req.on('data', c => {
+        bodySize += c.length;
+        if (bodySize > 220 * 1024 * 1024) { req.destroy(); return; }
+        body += c.toString();
+      });
+      req.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          const username = (data.username || '').trim();
+          if (username === '.' || username === '..' || !/^[A-Za-z0-9._]{1,30}$/.test(username)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'username 格式非法' }));
+            return;
+          }
+          const targetDir = path.join(INSTAGRAM_SCRAPE_DIR, username);
+          if (!isPathWithin(path.resolve(targetDir), path.resolve(INSTAGRAM_SCRAPE_DIR))) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Access Denied' }));
+            return;
+          }
+          const m = typeof data.data === 'string' ? data.data.match(/^data:[^;]+;base64,(.+)$/) : null;
+          if (!m) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'data 为空或格式非法' }));
+            return;
+          }
+          const buf = Buffer.from(m[1], 'base64');
+          if (buf.length < 64 * 1024) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '视频内容过小，可能是 MSE 流不可读' }));
+            return;
+          }
+          if (buf.length > HARVEST_MAX_BYTES) {
+            res.writeHead(413, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '视频超过大小上限' }));
+            return;
+          }
+          fs.mkdirSync(targetDir, { recursive: true });
+          const ext = sniffExt(buf.subarray(0, 16)) || '.mp4';
+          const hash = crypto.createHash('sha1').update(buf).digest('hex').slice(0, 24);
+          const finalPath = path.join(targetDir, `${hash}${ext}`);
+          if (fs.existsSync(finalPath)) {
+            console.log(`[Harvest-Blob] @${username}: 内容已存在，跳过 (${hash})`);
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ success: true, username, downloaded: 0, skipped: 1 }));
+            return;
+          }
+          const tmpPath = path.join(targetDir, `.${hash}.part`);
+          fs.writeFileSync(tmpPath, buf);
+          fs.renameSync(tmpPath, finalPath);
+          try {
+            const infoPath = path.join(targetDir, '.collection-info.json');
+            if (!fs.existsSync(infoPath)) {
+              fs.writeFileSync(infoPath, JSON.stringify({
+                username, full_name: null, source: 'browser-harvest', updatedAt: Date.now(),
+              }, null, 2), 'utf8');
+            }
+          } catch {}
+          const sizeMB = (buf.length / 1024 / 1024).toFixed(1);
+          console.log(`[Harvest-Blob] @${username}: ${path.basename(finalPath)} (${sizeMB} MB)`);
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ success: true, username, downloaded: 1, skipped: 0, sizeMB }));
+        } catch (err) {
+          console.warn(`[Harvest-Blob] 失败: ${err.message}`);
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message }));
         }

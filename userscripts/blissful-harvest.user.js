@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      0.2.0
+// @version      0.3.0
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。只收集页面上已加载的媒体地址，不产生额外对 IG 的请求。
 // @match        https://www.instagram.com/*
 // @run-at       document-idle
@@ -9,6 +9,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @connect      localhost
 // @connect      127.0.0.1
 // @connect      gallery.example.com
@@ -104,6 +105,7 @@
   const seenThisSession = new Set();       // fileKey -> 防止重复处理同一媒体
   const pendingByUser = new Map();         // username -> Map(fileKey -> item)
   const failedCount = new Map();           // fileKey -> 连续失败次数（3 次后放弃）
+  const blobQueue = [];                    // 流式视频待中继队列 {username, videoEl}
   const SENT_CAP = 3000;
   const BATCH_MAX = 40;
 
@@ -143,9 +145,17 @@
     return 1;
   }
 
-  function harvestVideo(v, pending) {
+  function harvestVideo(v, pending, username) {
     const src = v.currentSrc || v.src || (v.querySelector('source') && v.querySelector('source').src);
-    if (!src || !/^https:/.test(src) || src.startsWith('blob:')) return 0;
+    if (!src) return 0;
+    // 流式播放源（blob:）拿不到 mp4 直链，转浏览器中继队列；按内容哈希在服务端去重
+    if (src.startsWith('blob:')) {
+      if (v.dataset.bfHarvested) return 0;
+      v.dataset.bfHarvested = '1';
+      blobQueue.push({ username, videoEl: v });
+      return 0;
+    }
+    if (!/^https:/.test(src)) return 0;
     try { if (!IG_CDN.test(new URL(src).hostname)) return 0; } catch { return 0; }
     const key = fileKey(src);
     if (!key || seenThisSession.has(key) || pending.has(key)) return 0;
@@ -163,7 +173,7 @@
       if (!pendingByUser.has(username)) pendingByUser.set(username, new Map());
       const pending = pendingByUser.get(username);
       document.querySelectorAll('img[srcset], img[src]').forEach(img => { added += harvestImg(img, pending); });
-      document.querySelectorAll('video').forEach(v => { added += harvestVideo(v, pending); });
+      document.querySelectorAll('video').forEach(v => { added += harvestVideo(v, pending, username); });
     }
 
     // 2) 时间线等任何页面的帖子卡片：按卡片头部作者链接归属
@@ -173,7 +183,7 @@
       if (!pendingByUser.has(owner)) pendingByUser.set(owner, new Map());
       const pending = pendingByUser.get(owner);
       article.querySelectorAll('img[srcset], img[src]').forEach(img => { added += harvestImg(img, pending); });
-      article.querySelectorAll('video').forEach(v => { added += harvestVideo(v, pending); });
+      article.querySelectorAll('video').forEach(v => { added += harvestVideo(v, pending, owner); });
     });
 
     // 3) 从时间线点开的帖子浮层（URL 无用户名）：按浮层头部作者链接归属。
@@ -184,7 +194,7 @@
       if (!pendingByUser.has(owner)) pendingByUser.set(owner, new Map());
       const pending = pendingByUser.get(owner);
       dialog.querySelectorAll('img[srcset], img[src]').forEach(img => { added += harvestImg(img, pending); });
-      dialog.querySelectorAll('video').forEach(v => { added += harvestVideo(v, pending); });
+      dialog.querySelectorAll('video').forEach(v => { added += harvestVideo(v, pending, owner); });
     });
 
     const totalPending = [...pendingByUser.values()].reduce((n, m) => n + m.size, 0);
@@ -242,6 +252,48 @@
     }
   }
 
+  // ─── 流式视频中继 ────────────────────────────────────────────────────────
+  // blob: 播放源由浏览器读取（可能命中 HTTP 缓存，不对 IG 产生新请求），
+  // 转 base64 后 POST 到服务端，按内容哈希落盘。MSE 不可读的流会提示跳过。
+  let blobBusy = false;
+  function processBlobQueue() {
+    if (blobBusy || !blobQueue.length) return;
+    blobBusy = true;
+    const { username, videoEl } = blobQueue.shift();
+    const src = videoEl.currentSrc || videoEl.src;
+    const finish = (msg) => { flashBadge(msg); blobBusy = false; };
+    if (!username || !src || !src.startsWith('blob:')) { blobBusy = false; return; }
+    const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch)
+      ? unsafeWindow.fetch.bind(unsafeWindow) : window.fetch.bind(window);
+    pageFetch(src).then(r => r.blob()).then(blob => {
+      if (!blob || blob.size < 65536) { finish('🎬 流式视频不可读取（MSE），已跳过'); return; }
+      if (blob.size > 150 * 1024 * 1024) { finish('🎬 视频超过 150MB，已跳过'); return; }
+      const reader = new FileReader();
+      reader.onerror = () => finish('🎬 视频读取失败');
+      reader.onload = () => {
+        GM_xmlhttpRequest({
+          method: 'POST',
+          url: GALLERY() + '/api/instagram/harvest-blob',
+          headers: { 'Content-Type': 'application/json' },
+          data: JSON.stringify({ username, data: reader.result }),
+          timeout: 180000,
+          onload: res => {
+            let d = {}; try { d = JSON.parse(res.responseText); } catch {}
+            if (res.status === 200 && d.success) {
+              if (d.downloaded) finish(`🎬 视频已存 @${username}（${d.sizeMB} MB）`);
+              else finish('🎬 视频内容已存在，跳过');
+            } else if (res.status === 401) finish('请先登录画廊，视频才能入库');
+            else finish(`🎬 视频入库失败 ${res.status}：${d.error || '未知错误'}`);
+            blobBusy = false;
+          },
+          onerror: () => { finish('画廊未连接，视频未入库'); blobBusy = false; },
+          ontimeout: () => { finish('🎬 视频传输超时'); blobBusy = false; },
+        });
+      };
+      reader.readAsDataURL(blob);
+    }).catch(() => { finish('🎬 流式视频不可读取（MSE），已跳过'); blobBusy = false; });
+  }
+
   // ─── 状态徽章 ────────────────────────────────────────────────────────────
   const badge = document.createElement('div');
   badge.style.cssText = [
@@ -279,6 +331,6 @@
 
   // ─── 定时器 ──────────────────────────────────────────────────────────────
   setInterval(scan, 1500);
-  setInterval(flush, 5000);
+  setInterval(() => { flush(); processBlobQueue(); }, 5000);
   scan();
 })();
