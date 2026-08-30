@@ -1114,7 +1114,12 @@ export function createApiHandler() {
             return;
           }
           fs.mkdirSync(targetDir, { recursive: true });
-          const ext = sniffExt(buf.subarray(0, 16)) || '.mp4';
+          const ext = sniffExt(buf.subarray(0, 16));
+          if (ext !== '.mp4' && ext !== '.webm') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '内容不是视频（magic number 校验失败）' }));
+            return;
+          }
           const hash = crypto.createHash('sha1').update(buf).digest('hex').slice(0, 24);
           const finalPath = path.join(targetDir, `${hash}${ext}`);
           if (fs.existsSync(finalPath)) {

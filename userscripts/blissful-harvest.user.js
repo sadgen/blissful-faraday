@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      0.4.0
+// @version      0.5.0
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。只收集页面上已加载的媒体地址，不产生额外对 IG 的请求。
 // @match        https://www.instagram.com/*
 // @run-at       document-idle
@@ -283,6 +283,143 @@
     reader.readAsDataURL(blob);
   }
 
+  // ─── 视频分片旁听（零请求拼装完整文件的前提）──────────────────────────
+  // 播放器自己发的视频分片请求，旁听其响应并按 URL 分组记录字节区间。
+  // 不产生任何新请求；若分片覆盖全文件即可零请求拼装出完整 mp4。
+  const segGroups = new Map(); // origin+pathname → {url, chunks, total, lastSeen, ct}
+  const VIDEO_HOST = /cdninstagram\.com|fbcdn\.net/i;
+
+  function noteSegResponse(urlStr, status, getHeader, body) {
+    try {
+      const u = new URL(urlStr, location.href);
+      if (!VIDEO_HOST.test(u.hostname) || (status !== 200 && status !== 206)) return;
+      const ct = getHeader('content-type') || '';
+      if (!ct.startsWith('video/') && !ct.includes('octet-stream') && !/\/o1\//.test(u.pathname)) return;
+      const key = u.origin + u.pathname;
+      let g = segGroups.get(key);
+      if (!g) {
+        if (segGroups.size > 40) { // 防长会话无限增长
+          let oldest = null;
+          for (const [k, v] of segGroups) if (!oldest || v.lastSeen < oldest[1].lastSeen) oldest = [k, v];
+          if (oldest) segGroups.delete(oldest[0]);
+        }
+        g = { url: u.origin + u.pathname + u.search, chunks: new Map(), total: 0, lastSeen: 0, ct };
+        segGroups.set(key, g);
+      }
+      g.lastSeen = Date.now();
+      if (!body || !body.byteLength) return;
+      const cr = getHeader('content-range');
+      let start = 0, end = body.byteLength - 1, total = body.byteLength;
+      const m = cr && cr.match(/bytes\s+(\d+)-(\d+)\/(\d+|\*)/);
+      if (m) { start = +m[1]; end = +m[2]; total = m[3] === '*' ? 0 : +m[3]; }
+      else { const cl = getHeader('content-length'); if (cl) total = +cl; }
+      if (total > g.total) g.total = total;
+      g.chunks.set(start, { end, data: body });
+    } catch {}
+  }
+
+  function hookNetwork() {
+    const uw = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    try {
+      if (uw.fetch && !uw.__bfFetchHooked) {
+        uw.__bfFetchHooked = true;
+        const origFetch = uw.fetch;
+        uw.fetch = function (...args) {
+          const result = origFetch.apply(this, args);
+          try {
+            const raw = args[0];
+            const u = typeof raw === 'string' ? raw : (raw && raw.url) || '';
+            if (VIDEO_HOST.test(u) && /\/o1\//.test(u)) {
+              result.then(res => {
+                try {
+                  const ct = res.headers.get('content-type') || '';
+                  if (!ct.startsWith('video/') && !ct.includes('octet-stream')) return;
+                  res.clone().arrayBuffer().then(buf =>
+                    noteSegResponse(res.url || u, res.status, n => res.headers.get(n), buf)
+                  ).catch(() => {});
+                } catch {}
+              }).catch(() => {});
+            }
+          } catch {}
+          return result;
+        };
+      }
+    } catch {}
+    try {
+      const xp = uw.XMLHttpRequest && uw.XMLHttpRequest.prototype;
+      if (xp && !xp.__bfXhrHooked) {
+        xp.__bfXhrHooked = true;
+        const origOpen = xp.open, origSend = xp.send;
+        xp.open = function (method, url) { this.__bfUrl = url; return origOpen.apply(this, arguments); };
+        xp.send = function () {
+          const xhr = this;
+          xhr.addEventListener('load', () => {
+            try {
+              const u = xhr.__bfUrl || '';
+              if (VIDEO_HOST.test(u) && /\/o1\//.test(u) && xhr.responseType === 'arraybuffer') {
+                const ct = xhr.getResponseHeader('content-type') || '';
+                if (ct.startsWith('video/') || ct.includes('octet-stream')) {
+                  noteSegResponse(new URL(u, location.href).href, xhr.status, n => xhr.getResponseHeader(n), xhr.response);
+                }
+              }
+            } catch {}
+          });
+          return origSend.apply(this, arguments);
+        };
+      }
+    } catch {}
+  }
+
+  function assembleSegGroup(g) {
+    try {
+      if (!g.total || !g.chunks.size) return null;
+      const starts = [...g.chunks.keys()].sort((a, b) => a - b);
+      let cursor = 0;
+      const parts = [];
+      for (const s of starts) {
+        const c = g.chunks.get(s);
+        if (s > cursor) return null; // 有空洞，未缓冲全
+        if (c.end + 1 > cursor) {
+          parts.push(c.data.slice(cursor - s));
+          cursor = c.end + 1;
+        }
+      }
+      if (cursor < g.total) return null; // 未覆盖全文件
+      const out = new Uint8Array(cursor);
+      let off = 0;
+      for (const p of parts) { out.set(new Uint8Array(p), off); off += p.byteLength; }
+      return out;
+    } catch { return null; }
+  }
+
+  function bestSegGroup() {
+    const now = Date.now();
+    let best = null;
+    for (const g of segGroups.values()) {
+      if (now - g.lastSeen > 120000) continue; // 只看最近 2 分钟的分片
+      if (!best || g.lastSeen > best.lastSeen) best = g;
+    }
+    return best;
+  }
+
+  // MSE 分片拼装优先；拼不全则用记录到的 URL 做一次缓存优先的完整 GET；
+  // 仍失败才退级实时录制（onFail）。
+  function trySegFullCapture(username, onFail) {
+    const g = bestSegGroup();
+    if (!g) { onFail(); return; }
+    const assembled = assembleSegGroup(g);
+    if (assembled && assembled.byteLength > 65536) {
+      uploadVideoBlob(username, new Blob([assembled], { type: g.ct || 'video/mp4' }), msg => flashBadge(msg));
+      return;
+    }
+    const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch)
+      ? unsafeWindow.fetch.bind(unsafeWindow) : window.fetch.bind(window);
+    pageFetch(g.url).then(r => r.blob()).then(b => {
+      if (b && b.size > 65536) uploadVideoBlob(username, b, msg => flashBadge(msg));
+      else onFail();
+    }).catch(onFail);
+  }
+
   let activeRec = null; // 单录制槽：新录制抢占旧录制
   function startRecording(username, videoEl) {
     if (videoEl.dataset.bfRecording || videoEl.ended) return;
@@ -343,14 +480,14 @@
     pageFetch(src).then(r => r.blob()).then(blob => {
       if (!blob || blob.size < 65536) {
         blobBusy = false;
-        startRecording(username, videoEl); // MSE 流：退级实时录制
+        trySegFullCapture(username, () => startRecording(username, videoEl)); // MSE 流：分片拼装 → 补全 GET → 实时录制
         return;
       }
       if (blob.size > 150 * 1024 * 1024) { finish('🎬 视频超过 150MB，已跳过'); return; }
       uploadVideoBlob(username, blob, msg => finish(msg));
     }).catch(() => {
       blobBusy = false;
-      startRecording(username, videoEl);
+      trySegFullCapture(username, () => startRecording(username, videoEl));
     });
   }
 
@@ -390,6 +527,7 @@
   }
 
   // ─── 定时器 ──────────────────────────────────────────────────────────────
+  hookNetwork(); // 尽早旁听播放器的视频分片请求
   setInterval(scan, 1500);
   setInterval(() => { flush(); processBlobQueue(); }, 5000);
   scan();
