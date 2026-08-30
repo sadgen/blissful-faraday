@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      0.3.0
+// @version      0.4.0
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。只收集页面上已加载的媒体地址，不产生额外对 IG 的请求。
 // @match        https://www.instagram.com/*
 // @run-at       document-idle
@@ -252,46 +252,106 @@
     }
   }
 
-  // ─── 流式视频中继 ────────────────────────────────────────────────────────
-  // blob: 播放源由浏览器读取（可能命中 HTTP 缓存，不对 IG 产生新请求），
-  // 转 base64 后 POST 到服务端，按内容哈希落盘。MSE 不可读的流会提示跳过。
+  // ─── 流式视频中继 / 实时录制 ─────────────────────────────────────────────
+  // blob: 播放源先尝试浏览器直读（部分视频是整段 Blob，可命中缓存零请求）；
+  // 若是 MSE 分段流（不可读），退级为 MediaRecorder 实时录制——播多久录多久，
+  // 播完（或切走 30 秒后）自动入库为 webm，画质等同播放画面。
   let blobBusy = false;
+
+  function uploadVideoBlob(username, blob, onDone) {
+    const reader = new FileReader();
+    reader.onerror = () => onDone('🎬 视频读取失败');
+    reader.onload = () => {
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: GALLERY() + '/api/instagram/harvest-blob',
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ username, data: reader.result }),
+        timeout: 180000,
+        onload: res => {
+          let d = {}; try { d = JSON.parse(res.responseText); } catch {}
+          if (res.status === 200 && d.success) {
+            if (d.downloaded) onDone(`🎬 视频已存 @${username}（${d.sizeMB} MB）`);
+            else onDone('🎬 视频内容已存在，跳过');
+          } else if (res.status === 401) onDone('请先登录画廊，视频才能入库');
+          else onDone(`🎬 视频入库失败 ${res.status}：${d.error || '未知错误'}`);
+        },
+        onerror: () => onDone('画廊未连接，视频未入库'),
+        ontimeout: () => onDone('🎬 视频传输超时'),
+      });
+    };
+    reader.readAsDataURL(blob);
+  }
+
+  let activeRec = null; // 单录制槽：新录制抢占旧录制
+  function startRecording(username, videoEl) {
+    if (videoEl.dataset.bfRecording || videoEl.ended) return;
+    videoEl.dataset.bfRecording = '1';
+    try {
+      const stream = videoEl.captureStream
+        ? videoEl.captureStream()
+        : (videoEl.mozCaptureStream ? videoEl.mozCaptureStream() : null);
+      const mimes = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+      const mime = (typeof MediaRecorder !== 'undefined' && stream)
+        ? mimes.find(m => MediaRecorder.isTypeSupported(m)) : null;
+      if (!stream || !mime) { flashBadge('🎬 当前浏览器不支持录制流式视频'); return; }
+      if (activeRec) { try { activeRec.rec.stop(); } catch {} }
+
+      const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8000000 });
+      const chunks = [];
+      let stopped = false;
+      let pauseTimer = null;
+      const stopOnce = () => {
+        if (stopped) return;
+        stopped = true;
+        clearTimeout(maxTimer);
+        clearTimeout(pauseTimer);
+        try { if (rec.state !== 'inactive') rec.stop(); } catch {}
+      };
+      const maxTimer = setTimeout(stopOnce, 5 * 60 * 1000); // 单条上限 5 分钟
+
+      rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+      rec.onstop = () => {
+        activeRec = null;
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        if (blob.size < 65536) { flashBadge('🎬 录制内容过短，未入库'); return; }
+        flashBadge('🎬 录制完成，视频入库中...');
+        uploadVideoBlob(username, blob, msg => flashBadge(msg));
+      };
+      videoEl.addEventListener('ended', stopOnce, { once: true });
+      // 暂停（含缓冲）超过 30 秒视为看完，落库已录部分
+      videoEl.addEventListener('pause', () => { pauseTimer = setTimeout(stopOnce, 30000); });
+      videoEl.addEventListener('play', () => clearTimeout(pauseTimer));
+
+      rec.start(2000);
+      activeRec = { rec };
+      flashBadge(`🎬 流式视频开始实时录制 @${username}（播完自动入库）`);
+    } catch (err) {
+      flashBadge('🎬 录制启动失败：' + err.message);
+    }
+  }
+
   function processBlobQueue() {
     if (blobBusy || !blobQueue.length) return;
     blobBusy = true;
     const { username, videoEl } = blobQueue.shift();
-    const src = videoEl.currentSrc || videoEl.src;
     const finish = (msg) => { flashBadge(msg); blobBusy = false; };
+    const src = videoEl.currentSrc || videoEl.src;
     if (!username || !src || !src.startsWith('blob:')) { blobBusy = false; return; }
     const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch)
       ? unsafeWindow.fetch.bind(unsafeWindow) : window.fetch.bind(window);
     pageFetch(src).then(r => r.blob()).then(blob => {
-      if (!blob || blob.size < 65536) { finish('🎬 流式视频不可读取（MSE），已跳过'); return; }
+      if (!blob || blob.size < 65536) {
+        blobBusy = false;
+        startRecording(username, videoEl); // MSE 流：退级实时录制
+        return;
+      }
       if (blob.size > 150 * 1024 * 1024) { finish('🎬 视频超过 150MB，已跳过'); return; }
-      const reader = new FileReader();
-      reader.onerror = () => finish('🎬 视频读取失败');
-      reader.onload = () => {
-        GM_xmlhttpRequest({
-          method: 'POST',
-          url: GALLERY() + '/api/instagram/harvest-blob',
-          headers: { 'Content-Type': 'application/json' },
-          data: JSON.stringify({ username, data: reader.result }),
-          timeout: 180000,
-          onload: res => {
-            let d = {}; try { d = JSON.parse(res.responseText); } catch {}
-            if (res.status === 200 && d.success) {
-              if (d.downloaded) finish(`🎬 视频已存 @${username}（${d.sizeMB} MB）`);
-              else finish('🎬 视频内容已存在，跳过');
-            } else if (res.status === 401) finish('请先登录画廊，视频才能入库');
-            else finish(`🎬 视频入库失败 ${res.status}：${d.error || '未知错误'}`);
-            blobBusy = false;
-          },
-          onerror: () => { finish('画廊未连接，视频未入库'); blobBusy = false; },
-          ontimeout: () => { finish('🎬 视频传输超时'); blobBusy = false; },
-        });
-      };
-      reader.readAsDataURL(blob);
-    }).catch(() => { finish('🎬 流式视频不可读取（MSE），已跳过'); blobBusy = false; });
+      uploadVideoBlob(username, blob, msg => finish(msg));
+    }).catch(() => {
+      blobBusy = false;
+      startRecording(username, videoEl);
+    });
   }
 
   // ─── 状态徽章 ────────────────────────────────────────────────────────────
