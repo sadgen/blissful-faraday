@@ -322,6 +322,32 @@ function harvestFilename(urlString, type) {
   } catch { return null; }
 }
 
+function mediaIdPrefix(urlString) {
+  let s = String(urlString || '');
+  try { s = decodeURIComponent(new URL(s).pathname.split('/').pop() || s); } catch {}
+  const m = s.match(/^(\d{8,})_/);
+  return m ? m[1] : null;
+}
+
+// 视频入库后删除其封面图（封面与视频共享媒体 ID 前缀，仅删图片扩展名）
+function removeVideoPosters(dir, prefixes) {
+  try {
+    const set = prefixes instanceof Set
+      ? prefixes
+      : new Set((Array.isArray(prefixes) ? prefixes : [prefixes]).filter(Boolean));
+    if (!set.size) return 0;
+    let removed = 0;
+    for (const f of fs.readdirSync(dir)) {
+      const m = f.match(/^(\d{8,})_/);
+      if (m && set.has(m[1]) && /\.(jpe?g|png|webp)$/i.test(f)) {
+        try { fs.unlinkSync(path.join(dir, f)); removed++; } catch {}
+      }
+    }
+    if (removed) console.log(`[Harvest] 已移除 ${removed} 张视频封面 @ ${dir}`);
+    return removed;
+  } catch { return 0; }
+}
+
 // 下载到 tmpPath（隐藏文件 + .part 后缀，画廊扫描会跳过点文件，半成品不会出现在图集里）
 async function harvestDownload(urlString, tmpPath) {
   const res = await fetch(urlString, {
@@ -999,6 +1025,7 @@ export function createApiHandler() {
 
           fs.mkdirSync(targetDir, { recursive: true });
           let downloaded = 0, skipped = 0, failed = 0;
+          const videoPrefixSet = new Set();
 
           for (const item of items) {
             try {
@@ -1045,8 +1072,14 @@ export function createApiHandler() {
               }
               fs.renameSync(tmpPath, finalPath);
               downloaded++;
+              if (item.type === 'video') {
+                videoPrefixSet.add(mediaIdPrefix(item.url));
+                videoPrefixSet.add(mediaIdPrefix(item.poster));
+              }
             } catch { failed++; }
           }
+          // 视频入库后删除其封面图，避免"封面 + 视频"重复展示
+          removeVideoPosters(targetDir, videoPrefixSet);
 
           // 图集元数据，/api/collection/info 会读取并在 UI 显示 full_name
           try {
@@ -1124,6 +1157,7 @@ export function createApiHandler() {
           const finalPath = path.join(targetDir, `${hash}${ext}`);
           if (fs.existsSync(finalPath)) {
             console.log(`[Harvest-Blob] @${username}: 内容已存在，跳过 (${hash})`);
+            removeVideoPosters(targetDir, [mediaIdPrefix(data.posterUrl), mediaIdPrefix(data.srcUrl)]);
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ success: true, username, downloaded: 0, skipped: 1 }));
             return;
@@ -1131,6 +1165,7 @@ export function createApiHandler() {
           const tmpPath = path.join(targetDir, `.${hash}.part`);
           fs.writeFileSync(tmpPath, buf);
           fs.renameSync(tmpPath, finalPath);
+          removeVideoPosters(targetDir, [mediaIdPrefix(data.posterUrl), mediaIdPrefix(data.srcUrl)]);
           try {
             const infoPath = path.join(targetDir, '.collection-info.json');
             if (!fs.existsSync(infoPath)) {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      0.7.0
+// @version      0.8.0
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。只收集页面上已加载的媒体地址，不产生额外对 IG 的请求。
 // @match        https://www.instagram.com/*
 // @run-at       document-idle
@@ -118,6 +118,52 @@
   const SENT_CAP = 3000;
   const BATCH_MAX = 40;
 
+  // ─── 视频封面去重 ────────────────────────────────────────────────────────
+  // 视频入库后其封面图（同媒体 ID 前缀的图片变体）不再采集；已落盘的封面由
+  // 服务端在视频入库时删除，避免"封面 + 视频"在画廊里重复出现。
+  const videoPrefixes = (() => {
+    try { return new Set(JSON.parse(GM_getValue('bf_videoPrefixes', '[]'))); }
+    catch { return new Set(); }
+  })();
+  function mediaIdPrefix(urlString) {
+    let s = String(urlString || '');
+    try { s = decodeURIComponent(new URL(s).pathname.split('/').pop() || s); } catch {}
+    const m = s.match(/^(\d{8,})_/);
+    return m ? m[1] : null;
+  }
+  function registerVideoPrefix(urlString) {
+    const pfx = mediaIdPrefix(urlString);
+    if (!pfx || videoPrefixes.has(pfx)) return;
+    videoPrefixes.add(pfx);
+    const arr = [...videoPrefixes];
+    if (arr.length > 2000) arr.splice(0, arr.length - 2000);
+    GM_setValue('bf_videoPrefixes', JSON.stringify(arr));
+  }
+  // 视频元素上与画面重叠的图片即封面（poster 属性缺失时的兜底）
+  function findPosterImg(videoEl) {
+    try {
+      const container = videoEl.closest('article') || videoEl.closest('div[role="dialog"]')
+        || videoEl.closest('li') || videoEl.parentElement;
+      if (!container) return null;
+      const vr = videoEl.getBoundingClientRect();
+      let best = null, bestRatio = 0;
+      container.querySelectorAll('img').forEach(img => {
+        const r = img.getBoundingClientRect();
+        const ox = Math.min(vr.right, r.right) - Math.max(vr.left, r.left);
+        const oy = Math.min(vr.bottom, r.bottom) - Math.max(vr.top, r.top);
+        if (ox <= 0 || oy <= 0 || !r.width || !r.height) return;
+        const ratio = (ox * oy) / (r.width * r.height);
+        if (ratio > 0.5 && ratio > bestRatio) { bestRatio = ratio; best = img; }
+      });
+      return best;
+    } catch { return null; }
+  }
+  function posterUrlOf(videoEl) {
+    if (videoEl.poster) return videoEl.poster;
+    const img = findPosterImg(videoEl);
+    return img ? bestFromSrcset(img) : '';
+  }
+
   const sentKey = u => 'bf_sent_' + u;
   function loadSent(username) {
     try { return new Set(JSON.parse(GM_getValue(sentKey(username), '[]'))); }
@@ -149,6 +195,8 @@
     try { if (!IG_CDN.test(new URL(src).hostname)) return 0; } catch { return 0; }
     const key = fileKey(src);
     if (!key || seenThisSession.has(key) || pending.has(key)) return 0;
+    const vpfx = mediaIdPrefix(src);
+    if (vpfx && videoPrefixes.has(vpfx)) return 0; // 已入库视频的封面图
     seenThisSession.add(key);
     pending.set(key, { key, url: src, alt: fullResCandidates(src), type: 'image' });
     return 1;
@@ -169,7 +217,7 @@
     const key = fileKey(src);
     if (!key || seenThisSession.has(key) || pending.has(key)) return 0;
     seenThisSession.add(key);
-    pending.set(key, { key, url: src, alt: [], type: 'video' });
+    pending.set(key, { key, url: src, alt: [], type: 'video', poster: posterUrlOf(v) });
     return 1;
   }
 
@@ -236,6 +284,7 @@
               pending.delete(it.key);
               sent.add(it.key);
               failedCount.delete(it.key);
+              if (it.type === 'video') { registerVideoPrefix(it.url); registerVideoPrefix(it.poster); }
             });
             saveSent(username, sent);
             flashBadge(`@${username} 新存 ${data.downloaded} · 已有 ${data.skipped}` +
@@ -276,11 +325,18 @@
         method: 'POST',
         url: GALLERY() + '/api/instagram/harvest-blob',
         headers: { 'Content-Type': 'application/json' },
-        data: JSON.stringify({ username, data: reader.result, debug: o.debug || undefined }),
+        data: JSON.stringify({ username, data: reader.result, posterUrl: o.posterUrl || undefined, srcUrl: o.srcUrl || undefined, debug: o.debug || undefined }),
         timeout: 180000,
         onload: res => {
           let d = {}; try { d = JSON.parse(res.responseText); } catch {}
           if (res.status === 200 && d.success) {
+            registerVideoPrefix(o.srcUrl || o.posterUrl);
+            registerVideoPrefix(o.posterUrl);
+            const pend = pendingByUser.get(username);
+            const pfx = mediaIdPrefix(o.srcUrl || o.posterUrl);
+            if (pend && pfx) for (const k of [...pend.keys()]) {
+              if (mediaIdPrefix(k) === pfx) pend.delete(k); // 封面图不再上传
+            }
             if (d.downloaded) onDone(`${o.okPrefix || '🎬 视频已存'} @${username}（${d.sizeMB} MB）`);
             else onDone('🎬 视频内容已存在，跳过');
           } else if (res.status === 401) onDone('请先登录画廊，视频才能入库');
@@ -425,21 +481,21 @@
 
   // MSE 分片拼装优先；拼不全则用记录到的 URL 做一次缓存优先的完整 GET；
   // 仍失败才退级实时录制（onFail）。
-  function trySegFullCapture(username, onFail) {
+  function trySegFullCapture(username, onFail, posterUrl) {
     const debug = tapStats();
     const g = bestSegGroup();
     if (!g) { onFail(); return; }
     const assembled = assembleSegGroup(g);
     if (assembled && assembled.byteLength > 65536) {
       uploadVideoBlob(username, new Blob([assembled], { type: g.ct || 'video/mp4' }),
-        msg => flashBadge(msg), { okPrefix: '🎬 分片拼装完整视频已存', debug });
+        msg => flashBadge(msg), { okPrefix: '🎬 分片拼装完整视频已存', debug, posterUrl, srcUrl: g.url });
       return;
     }
     const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch)
       ? unsafeWindow.fetch.bind(unsafeWindow) : window.fetch.bind(window);
     pageFetch(g.url).then(r => r.blob()).then(b => {
       if (b && b.size > 65536) uploadVideoBlob(username, b, msg => flashBadge(msg),
-        { okPrefix: '🎬 完整视频已存（缓存补全）', debug });
+        { okPrefix: '🎬 完整视频已存（缓存补全）', debug, posterUrl, srcUrl: g.url });
       else onFail();
     }).catch(onFail);
   }
@@ -491,7 +547,7 @@
   }
 
   // 按体积从大到小尝试最多 3 个实际链接，完整 GET 后校验视频魔数再入库
-  function tryActualLinkCapture(username, onFail) {
+  function tryActualLinkCapture(username, onFail, posterUrl) {
     if (!FULL_DL_ENABLED()) { onFail(); return; }
     const cands = actualLinkCandidates();
     if (!cands.length) { onFail(); return; }
@@ -508,7 +564,7 @@
         if (!(isMp4 || isWebm) || buf.byteLength < 300 * 1024) { tryNext(); return; }
         uploadVideoBlob(username, new Blob([buf], { type: isMp4 ? 'video/mp4' : 'video/webm' }),
           msg => flashBadge(msg),
-          { okPrefix: '🎬 实际链接完整下载已存', debug: { links: cands.length, tried: i, bytes: buf.byteLength } });
+          { okPrefix: '🎬 实际链接完整下载已存', debug: { links: cands.length, tried: i, bytes: buf.byteLength }, posterUrl, srcUrl: cand.url });
       }).catch(tryNext);
     };
     tryNext();
@@ -547,7 +603,7 @@
         const blob = new Blob(chunks, { type: 'video/webm' });
         if (blob.size < 65536) { flashBadge('🎬 录制内容过短，未入库'); return; }
         flashBadge('🎬 录制完成，视频入库中...');
-        uploadVideoBlob(username, blob, msg => flashBadge(msg), { okPrefix: '🎬 录制视频已存' });
+        uploadVideoBlob(username, blob, msg => flashBadge(msg), { okPrefix: '🎬 录制视频已存', posterUrl: posterUrlOf(videoEl) });
       };
       videoEl.addEventListener('ended', stopOnce, { once: true });
       // 暂停（含缓冲）超过 30 秒视为看完，落库已录部分
@@ -569,19 +625,20 @@
     const finish = (msg) => { flashBadge(msg); blobBusy = false; };
     const src = videoEl.currentSrc || videoEl.src;
     if (!username || !src || !src.startsWith('blob:')) { blobBusy = false; return; }
+    const posterUrl = posterUrlOf(videoEl);
     const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch)
       ? unsafeWindow.fetch.bind(unsafeWindow) : window.fetch.bind(window);
     pageFetch(src).then(r => r.blob()).then(blob => {
       if (!blob || blob.size < 65536) {
         blobBusy = false;
-        trySegFullCapture(username, () => tryActualLinkCapture(username, () => startRecording(username, videoEl)));
+        trySegFullCapture(username, () => tryActualLinkCapture(username, () => startRecording(username, videoEl)), posterUrl);
         return;
       }
       if (blob.size > 150 * 1024 * 1024) { finish('🎬 视频超过 150MB，已跳过'); return; }
-      uploadVideoBlob(username, blob, msg => finish(msg));
+      uploadVideoBlob(username, blob, msg => finish(msg), { posterUrl });
     }).catch(() => {
       blobBusy = false;
-      trySegFullCapture(username, () => tryActualLinkCapture(username, () => startRecording(username, videoEl)));
+      trySegFullCapture(username, () => tryActualLinkCapture(username, () => startRecording(username, videoEl)), posterUrl);
     });
   }
 
