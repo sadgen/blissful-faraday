@@ -3,6 +3,8 @@
 // @namespace    blissful-faraday
 // @version      0.9.0
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。只收集页面上已加载的媒体地址，不产生额外对 IG 的请求。
+// @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
+// @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @match        https://www.instagram.com/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest

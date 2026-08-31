@@ -386,11 +386,35 @@ export function createApiHandler() {
     // ── Global auth interceptor ────────────────────────────────────────
     if (url.pathname.startsWith('/api/') &&
         !url.pathname.startsWith('/api/auth/') &&
+        !url.pathname.startsWith('/api/userscript/') &&
         url.pathname !== '/api/cache/clear' &&
         url.pathname !== '/api/collection/info') {
       if (authConfig.enabled && !getSession(req, authConfig)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'UNAUTHORIZED' }));
+        return;
+      }
+    }
+
+    // ── Serve Userscripts (/userscripts/* or /api/userscript/*) ─────────
+    if ((url.pathname.startsWith('/userscripts/') || url.pathname.startsWith('/api/userscript/')) &&
+        (req.method === 'GET' || req.method === 'HEAD')) {
+      const subPath = url.pathname.startsWith('/userscripts/')
+        ? url.pathname.replace(/^\/userscripts\//, '')
+        : url.pathname.replace(/^\/api\/userscript\//, '');
+      const userscriptsDir = path.resolve(projectRoot, 'userscripts');
+      const targetPath = path.resolve(userscriptsDir, subPath);
+
+      if (isPathWithin(targetPath, userscriptsDir) && fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
+        const ext = path.extname(targetPath).toLowerCase();
+        const mime = ext === '.js' ? 'application/javascript; charset=utf-8' : (ext === '.md' ? 'text/markdown; charset=utf-8' : 'text/plain; charset=utf-8');
+        res.writeHead(200, {
+          'Content-Type': mime,
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        });
+        if (req.method === 'HEAD') { res.end(); return; }
+        fs.createReadStream(targetPath).pipe(res);
         return;
       }
     }

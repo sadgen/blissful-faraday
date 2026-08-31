@@ -90,12 +90,12 @@ function serveStatic(req, res) {
 const apiHandler = createApiHandler();
 
 const server = http.createServer((req, res) => {
-  // API routes → handled by shared middleware
-  if (req.url.startsWith('/api/')) {
+  // API and userscript routes → handled by shared middleware
+  if (req.url.startsWith('/api/') || req.url.startsWith('/userscripts/')) {
     apiHandler(req, res, () => {
       // Fallback: no API route matched
       res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'API endpoint not found' }));
+      res.end(JSON.stringify({ error: 'Endpoint not found' }));
     });
     return;
   }

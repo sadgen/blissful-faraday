@@ -21,13 +21,20 @@
 - 视频入库后自动删除其封面图（封面与视频共享媒体 ID 前缀），避免"封面 + 视频"重复
 - 新图集落地后，画廊靠目录 mtime 变化自动重建缓存，无需手动重扫
 
-## 安装
+## 安装与自动更新
 
-1. 浏览器安装 [Tampermonkey](https://www.tampermonkey.net/) 扩展
-2. Tampermonkey 面板 → 添加新脚本 → 粘贴 `blissful-harvest.user.js` 全文 → 保存
-   （或把文件拖进浏览器，由 Tampermonkey 接管安装）
-3. 浏览器打开画廊（`http://localhost:3000`）**登录一次**——脚本回传需要画廊的会话 cookie
-4. 打开任意 Instagram 个人主页，左下角出现 `📥` 徽章即在工作
+### 方式 1：通过画廊直链一键安装 / 自动更新（推荐）
+1. 浏览器安装 [ScriptCat（脚本猫）](https://scriptcat.org/) 或 [Tampermonkey](https://www.tampermonkey.net/) 扩展
+2. 在浏览器中直接打开画廊脚本直链：
+   `https://gallery.example.com:8443/userscripts/blissful-harvest.user.js`
+   （扩展会自动弹出安装界面，点击「安装」即可）
+3. 脚本内置 `@updateURL` 与 `@downloadURL`，未来画廊升级时，ScriptCat / Tampermonkey 会**自动静默检查并完成更新**！
+4. 浏览器打开画廊（`https://gallery.example.com:8443` 或 `http://localhost:3000`）**登录一次**——脚本回传需要画廊的会话 cookie
+5. 打开任意 Instagram 个人主页或时间线，左下角出现 `📥` 徽章即在工作
+
+### 方式 2：手动复制粘贴安装
+1. ScriptCat / Tampermonkey 面板 → 添加新脚本 → 粘贴 `blissful-harvest.user.js` 全文 → 保存
+2. 登录画廊一次后即可正常使用。
 
 ## 在别的电脑上浏览
 
