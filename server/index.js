@@ -58,7 +58,9 @@ function serveStatic(req, res) {
   const resolved = path.resolve(filePath);
 
   // Security: ensure resolved path is inside distDir
-  if (!resolved.startsWith(path.resolve(distDir))) {
+  const resolvedDist = path.resolve(distDir);
+  const isInsideDist = resolved === resolvedDist || resolved.startsWith(resolvedDist + path.sep);
+  if (!isInsideDist) {
     res.writeHead(403);
     res.end('Forbidden');
     return;

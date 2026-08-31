@@ -1100,7 +1100,7 @@ export function createApiHandler() {
             res.end(JSON.stringify({ error: '内容不是视频（magic number 校验失败）' }));
             return;
           }
-          const hash = crypto.createHash('sha1').update(buf).digest('hex').slice(0, 24);
+          const hash = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 24);
           const finalPath = path.join(targetDir, `${hash}${ext}`);
           if (fs.existsSync(finalPath)) {
             console.log(`[Harvest-Blob] @${username}: 内容已存在，跳过 (${hash})`);

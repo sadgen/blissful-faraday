@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      0.9.0
+// @version      1.0.0
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。只收集页面上已加载的媒体地址，不产生额外对 IG 的请求。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -188,8 +188,34 @@
     return /^[A-Za-z0-9._]{1,30}$/.test(name) ? name : null;
   }
 
+  // 判断某个 img 元素是否属于视频的封面图/占位图
+  function isPosterImage(img) {
+    try {
+      // 1. 如果同容器内有 video 元素
+      const container = img.closest('article') || img.closest('div[role="dialog"]')
+        || img.closest('li') || img.parentElement;
+      if (container && container.querySelector('video')) return true;
+
+      // 2. 检查是否有视频相关的图标/SVG 或 Play 标识
+      if (container && (container.querySelector('svg[aria-label*="视频"], svg[aria-label*="Video"], svg[aria-label*="Reel"], svg[aria-label*="Clip"]') || container.querySelector('[aria-label*="播放"], [aria-label*="Play"]'))) {
+        return true;
+      }
+
+      // 3. 检查自身或父级是否有 video/poster 相关的 class 或 testid
+      let cur = img;
+      for (let i = 0; i < 4 && cur; i++) {
+        const testId = cur.getAttribute('data-testid') || '';
+        const ariaLabel = cur.getAttribute('aria-label') || '';
+        if (/video|reel|play/i.test(testId) || /video|reel|play/i.test(ariaLabel)) return true;
+        cur = cur.parentElement;
+      }
+    } catch {}
+    return false;
+  }
+
   function harvestImg(img, pending) {
     if (img.closest('header')) return 0; // 头像排除
+    if (isPosterImage(img)) return 0;   // 视频封面/预览图直接拦截不下载！
     const rect = img.getBoundingClientRect();
     if (rect.width > 0 && rect.width < 80) return 0; // 小图标排除
     const src = bestFromSrcset(img);
