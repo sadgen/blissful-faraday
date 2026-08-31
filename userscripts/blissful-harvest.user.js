@@ -23,6 +23,15 @@
   // 都会汇入同一台服务器。跨机器使用时把地址填成服务器的局域网地址。
   const DEFAULT_GALLERY = 'http://localhost:3000';
   const GALLERY = () => (GM_getValue('galleryUrl', DEFAULT_GALLERY) || '').replace(/\/+$/, '');
+  // 「实际链接完整下载」会对 IG CDN 发起每视频一次的完整 GET（用你自己的
+  // 浏览器会话）。量级等同正常看视频，但追求零额外请求可关闭，
+  // 关闭后流式视频退回实时录制（零请求，画质=播放画面）。
+  const FULL_DL_ENABLED = () => GM_getValue('fullDlEnabled', true) !== false;
+  GM_registerMenuCommand((GM_getValue('fullDlEnabled', true) !== false ? '✅' : '⛔') + ' 切换：视频完整下载（每视频 1 次请求）', () => {
+    const next = GM_getValue('fullDlEnabled', true) === false;
+    GM_setValue('fullDlEnabled', next);
+    alert(next ? '已开启：流式视频会用实际链接完整下载（原档画质，每视频 1 次请求）' : '已关闭：流式视频退回实时录制（零额外请求，画质=播放画面）');
+  });
   const ADDRESS_PROMPT = 'blissful-faraday 画廊地址（填好后需在该浏览器登录一次画廊）\n'
     + '· 推荐：https://gallery.example.com:8443 （地址固定，任何网络可用）\n'
     + '· 服务器本机浏览：http://localhost:3000\n'
@@ -483,6 +492,7 @@
 
   // 按体积从大到小尝试最多 3 个实际链接，完整 GET 后校验视频魔数再入库
   function tryActualLinkCapture(username, onFail) {
+    if (!FULL_DL_ENABLED()) { onFail(); return; }
     const cands = actualLinkCandidates();
     if (!cands.length) { onFail(); return; }
     const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch)
