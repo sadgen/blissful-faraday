@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      0.8.0
+// @version      0.9.0
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。只收集页面上已加载的媒体地址，不产生额外对 IG 的请求。
 // @match        https://www.instagram.com/*
 // @run-at       document-idle
@@ -21,7 +21,7 @@
   // ─── 配置 ────────────────────────────────────────────────────────────────
   // 同步目标是画廊服务器，与浏览用的电脑无关：在任何设备上刷到的图，
   // 都会汇入同一台服务器。跨机器使用时把地址填成服务器的局域网地址。
-  const DEFAULT_GALLERY = 'http://localhost:3000';
+  const DEFAULT_GALLERY = 'https://gallery.example.com:8443/';
   const GALLERY = () => (GM_getValue('galleryUrl', DEFAULT_GALLERY) || '').replace(/\/+$/, '');
   // 「实际链接完整下载」会对 IG CDN 发起每视频一次的完整 GET（用你自己的
   // 浏览器会话）。量级等同正常看视频，但追求零额外请求可关闭，
@@ -106,7 +106,7 @@
         u3.searchParams.delete('stp');
         cands.push(u3.href);
       }
-    } catch {}
+    } catch { }
     return cands;
   }
 
@@ -127,7 +127,7 @@
   })();
   function mediaIdPrefix(urlString) {
     let s = String(urlString || '');
-    try { s = decodeURIComponent(new URL(s).pathname.split('/').pop() || s); } catch {}
+    try { s = decodeURIComponent(new URL(s).pathname.split('/').pop() || s); } catch { }
     const m = s.match(/^(\d{8,})_/);
     return m ? m[1] : null;
   }
@@ -202,10 +202,94 @@
     return 1;
   }
 
+  // ─── React Fiber/Props 官方高清直链探查 ──────────────────────────────────
+  // Instagram 前端在渲染帖子时，已经把包含高清 mp4 直链的 GraphQL 数据缓存在
+  // React 组件的 Fiber / Props 属性中（包含 video_versions 数组）。
+  // 探查出真实直链后直接交由服务端后台下载完整原档，无需等待播放完成。
+  function extractDirectVideoUrls(videoEl) {
+    const urls = new Set();
+    const visited = new Set();
+
+    function searchObj(obj, depth = 0) {
+      if (!obj || typeof obj !== 'object' || depth > 8 || visited.has(obj)) return;
+      visited.add(obj);
+
+      if (Array.isArray(obj)) {
+        for (const item of obj) searchObj(item, depth + 1);
+        return;
+      }
+
+      // 命中标准 GraphQL video_versions 结构
+      if (Array.isArray(obj.video_versions)) {
+        for (const v of obj.video_versions) {
+          if (v && typeof v.url === 'string' && /^https:/.test(v.url) && isVideoEntryUrl(v.url)) {
+            urls.add(v.url);
+          }
+        }
+      }
+
+      // 常见直链字段
+      for (const key of ['video_url', 'videoUrl', 'playback_url', 'progressive_download_url']) {
+        if (typeof obj[key] === 'string' && /^https:/.test(obj[key]) && isVideoEntryUrl(obj[key])) {
+          urls.add(obj[key]);
+        }
+      }
+
+      for (const k in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, k)) {
+          // 避开 DOM 引用循环
+          if (k.startsWith('__react') || k === 'stateNode' || k === 'child' || k === 'sibling' || k === 'memoizedProps' || k === 'memoizedState' || k === 'pendingProps') {
+            searchObj(obj[k], depth + 1);
+          } else if (typeof obj[k] === 'object') {
+            searchObj(obj[k], depth + 1);
+          }
+        }
+      }
+    }
+
+    try {
+      let cur = videoEl;
+      let steps = 0;
+      while (cur && steps < 7) {
+        for (const key in cur) {
+          if (key.startsWith('__reactFiber') || key.startsWith('__reactProps') || key.startsWith('__reactInternalInstance')) {
+            searchObj(cur[key], 0);
+          }
+        }
+        if (urls.size > 0) break;
+        cur = cur.parentElement;
+        steps++;
+      }
+    } catch {}
+
+    return [...urls];
+  }
+
   function harvestVideo(v, pending, username) {
+    const poster = posterUrlOf(v);
+
+    // 1. 优先尝试从 React 内部状态提取官方 MP4 高清直链（秒存完整原档）
+    const directUrls = extractDirectVideoUrls(v);
+    if (directUrls.length > 0) {
+      let directAdded = 0;
+      for (const dUrl of directUrls) {
+        const key = fileKey(dUrl);
+        if (!key || seenThisSession.has(key) || pending.has(key)) continue;
+        seenThisSession.add(key);
+        pending.set(key, { key, url: dUrl, alt: [], type: 'video', poster });
+        directAdded++;
+      }
+      if (directAdded > 0) {
+        v.dataset.bfHarvested = '1';
+        return directAdded;
+      }
+    }
+
+    // 2. 尝试从 <video> 标签读取 src 直链
     const src = v.currentSrc || v.src || (v.querySelector('source') && v.querySelector('source').src);
     if (!src) return 0;
-    // 流式播放源（blob:）拿不到 mp4 直链，转浏览器中继队列；按内容哈希在服务端去重
+
+    // 3. 流式播放源（blob:）若无直接 MP4，转后台中继与录制兜底队列
     if (src.startsWith('blob:')) {
       if (v.dataset.bfHarvested) return 0;
       v.dataset.bfHarvested = '1';
@@ -217,7 +301,7 @@
     const key = fileKey(src);
     if (!key || seenThisSession.has(key) || pending.has(key)) return 0;
     seenThisSession.add(key);
-    pending.set(key, { key, url: src, alt: [], type: 'video', poster: posterUrlOf(v) });
+    pending.set(key, { key, url: src, alt: [], type: 'video', poster });
     return 1;
   }
 
@@ -278,7 +362,7 @@
         timeout: 30000,
         onload: res => {
           let data = {};
-          try { data = JSON.parse(res.responseText); } catch {}
+          try { data = JSON.parse(res.responseText); } catch { }
           if (res.status === 200 && data.success) {
             items.forEach(it => {
               pending.delete(it.key);
@@ -328,7 +412,7 @@
         data: JSON.stringify({ username, data: reader.result, posterUrl: o.posterUrl || undefined, srcUrl: o.srcUrl || undefined, debug: o.debug || undefined }),
         timeout: 180000,
         onload: res => {
-          let d = {}; try { d = JSON.parse(res.responseText); } catch {}
+          let d = {}; try { d = JSON.parse(res.responseText); } catch { }
           if (res.status === 200 && d.success) {
             registerVideoPrefix(o.srcUrl || o.posterUrl);
             registerVideoPrefix(o.posterUrl);
@@ -381,7 +465,7 @@
       else { const cl = getHeader('content-length'); if (cl) total = +cl; }
       if (total > g.total) g.total = total;
       g.chunks.set(start, { end, data: body });
-    } catch {}
+    } catch { }
   }
 
   function hookNetwork() {
@@ -402,15 +486,15 @@
                   if (!ct.startsWith('video/') && !ct.includes('octet-stream')) return;
                   res.clone().arrayBuffer().then(buf =>
                     noteSegResponse(res.url || u, res.status, n => res.headers.get(n), buf)
-                  ).catch(() => {});
-                } catch {}
-              }).catch(() => {});
+                  ).catch(() => { });
+                } catch { }
+              }).catch(() => { });
             }
-          } catch {}
+          } catch { }
           return result;
         };
       }
-    } catch {}
+    } catch { }
     try {
       const xp = uw.XMLHttpRequest && uw.XMLHttpRequest.prototype;
       if (xp && !xp.__bfXhrHooked) {
@@ -428,12 +512,12 @@
                   noteSegResponse(new URL(u, location.href).href, xhr.status, n => xhr.getResponseHeader(n), xhr.response);
                 }
               }
-            } catch {}
+            } catch { }
           });
           return origSend.apply(this, arguments);
         };
       }
-    } catch {}
+    } catch { }
   }
 
   function assembleSegGroup(g) {
@@ -511,7 +595,7 @@
       const u = new URL(urlStr, location.href);
       if (!VIDEO_HOST.test(u.hostname)) return false;
       return /\.(mp4|webm|m4s)(\?|$)/i.test(u.pathname) || /\/o1\//i.test(u.pathname) ||
-             /t50\.2886/i.test(u.pathname) || /^video\./i.test(u.hostname);
+        /t50\.2886/i.test(u.pathname) || /^video\./i.test(u.hostname);
     } catch { return false; }
   }
 
@@ -532,7 +616,7 @@
         for (const e of list.getEntries()) noteActualLink(e.name, e.decodedBodySize || e.transferSize || 0);
       });
       po.observe({ type: 'resource', buffered: true });
-    } catch {}
+    } catch { }
   }
 
   function actualLinkCandidates() {
@@ -582,7 +666,7 @@
       const mime = (typeof MediaRecorder !== 'undefined' && stream)
         ? mimes.find(m => MediaRecorder.isTypeSupported(m)) : null;
       if (!stream || !mime) { flashBadge('🎬 当前浏览器不支持录制流式视频'); return; }
-      if (activeRec) { try { activeRec.rec.stop(); } catch {} }
+      if (activeRec) { try { activeRec.rec.stop(); } catch { } }
 
       const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8000000 });
       const chunks = [];
@@ -593,7 +677,7 @@
         stopped = true;
         clearTimeout(maxTimer);
         clearTimeout(pauseTimer);
-        try { if (rec.state !== 'inactive') rec.stop(); } catch {}
+        try { if (rec.state !== 'inactive') rec.stop(); } catch { }
       };
       const maxTimer = setTimeout(stopOnce, 5 * 60 * 1000); // 单条上限 5 分钟
 
@@ -661,7 +745,7 @@
         badge.textContent = `📥 时间线 · 待同步 ${pendingCount}`;
       } else {
         let host = GALLERY();
-        try { host = new URL(GALLERY()).host; } catch {}
+        try { host = new URL(GALLERY()).host; } catch { }
         badge.textContent = `📥 待机 → ${host}（刷时间线或进主页自动采集）`;
       }
       return;
