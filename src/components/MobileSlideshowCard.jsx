@@ -1064,13 +1064,26 @@ export default function MobileSlideshowCard({
                 >
                   {isVideo && isActive ? (
                     <video
+                      ref={el => {
+                        if (el) {
+                          el.playbackRate = videoSpeed;
+                          el.play().catch(() => {});
+                        }
+                      }}
                       src={getImageUrl(imgName)}
                       muted
                       autoPlay
                       playsInline
+                      preload="auto"
                       loop={isOnlyVideo}
                       onEnded={() => advanceSlide(1)}
-                      playbackRate={videoSpeed}
+                      onLoadedMetadata={(e) => {
+                        e.target.playbackRate = videoSpeed;
+                        e.target.play().catch(() => {});
+                      }}
+                      onCanPlay={(e) => {
+                        e.target.play().catch(() => {});
+                      }}
                       style={{
                         width: '100%',
                         height: '100%',

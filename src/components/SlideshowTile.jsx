@@ -316,21 +316,36 @@ export default function SlideshowTile({
                 {isVideo ? (
                   isActive ? (
                     <video
-                      ref={el => { if (el) { el.playbackRate = videoSpeed; } }}
+                      ref={el => {
+                        if (el) {
+                          el.playbackRate = videoSpeed;
+                          el.play().catch(() => {});
+                        }
+                      }}
                       src={getImageUrl(imgName)}
                       muted
                       autoPlay
                       playsInline
+                      preload="auto"
                       loop={isOnlyVideo}
                       onEnded={() => advanceSlide(1)}
                       onLoadedMetadata={(e) => {
                         e.target.playbackRate = videoSpeed;
+                        e.target.play().catch(() => {});
                         if (!hasReportedReadyRef.current && onTileReady) {
                           hasReportedReadyRef.current = true;
                           onTileReady(tileId);
                         }
                       }}
+                      onCanPlay={(e) => {
+                        e.target.play().catch(() => {});
+                      }}
                       className="slide-image-main"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'contain'
+                      }}
                     />
                   ) : null
                 ) : (
