@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      0.6.0
+// @version      0.7.0
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。只收集页面上已加载的媒体地址，不产生额外对 IG 的请求。
 // @match        https://www.instagram.com/*
 // @run-at       document-idle
@@ -435,6 +435,75 @@
     }).catch(onFail);
   }
 
+  // ─── 实际链接捕获（PerformanceObserver）────────────────────────────────
+  // 播放器获取视频的每一个网络请求都会进 Performance 资源时间线（支持缓冲
+  // 回放），从这里拿"实际链接"，再做一次完整 GET 下载原档。
+  // VIDEO_HOST 复用分片旁听区块中的声明。
+  const actualLinks = new Map(); // url → {size, lastSeen}
+
+  function isVideoEntryUrl(urlStr) {
+    try {
+      const u = new URL(urlStr, location.href);
+      if (!VIDEO_HOST.test(u.hostname)) return false;
+      return /\.(mp4|webm|m4s)(\?|$)/i.test(u.pathname) || /\/o1\//i.test(u.pathname) ||
+             /t50\.2886/i.test(u.pathname) || /^video\./i.test(u.hostname);
+    } catch { return false; }
+  }
+
+  function noteActualLink(urlStr, size) {
+    if (!isVideoEntryUrl(urlStr)) return;
+    const prev = actualLinks.get(urlStr);
+    actualLinks.set(urlStr, { size: Math.max(prev ? prev.size : 0, size || 0), lastSeen: Date.now() });
+    if (actualLinks.size > 60) {
+      let oldest = null;
+      for (const [k, v] of actualLinks) if (!oldest || v.lastSeen < oldest[1].lastSeen) oldest = [k, v];
+      if (oldest) actualLinks.delete(oldest[0]);
+    }
+  }
+
+  function initPerfObserver() {
+    try {
+      const po = new PerformanceObserver(list => {
+        for (const e of list.getEntries()) noteActualLink(e.name, e.decodedBodySize || e.transferSize || 0);
+      });
+      po.observe({ type: 'resource', buffered: true });
+    } catch {}
+  }
+
+  function actualLinkCandidates() {
+    const now = Date.now();
+    const cands = [];
+    for (const [url, v] of actualLinks) {
+      if (now - v.lastSeen > 180000) continue; // 最近 3 分钟
+      cands.push({ url, size: v.size, lastSeen: v.lastSeen });
+    }
+    cands.sort((a, b) => b.size - a.size || b.lastSeen - a.lastSeen);
+    return cands;
+  }
+
+  // 按体积从大到小尝试最多 3 个实际链接，完整 GET 后校验视频魔数再入库
+  function tryActualLinkCapture(username, onFail) {
+    const cands = actualLinkCandidates();
+    if (!cands.length) { onFail(); return; }
+    const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch)
+      ? unsafeWindow.fetch.bind(unsafeWindow) : window.fetch.bind(window);
+    let i = 0;
+    const tryNext = () => {
+      if (i >= cands.length || i >= 3) { onFail(); return; }
+      const cand = cands[i++];
+      pageFetch(cand.url).then(r => r.arrayBuffer()).then(buf => {
+        const head = new Uint8Array(buf.slice(0, 12));
+        const isMp4 = buf.byteLength > 12 && head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70; // ftyp
+        const isWebm = head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3; // EBML
+        if (!(isMp4 || isWebm) || buf.byteLength < 300 * 1024) { tryNext(); return; }
+        uploadVideoBlob(username, new Blob([buf], { type: isMp4 ? 'video/mp4' : 'video/webm' }),
+          msg => flashBadge(msg),
+          { okPrefix: '🎬 实际链接完整下载已存', debug: { links: cands.length, tried: i, bytes: buf.byteLength } });
+      }).catch(tryNext);
+    };
+    tryNext();
+  }
+
   let activeRec = null; // 单录制槽：新录制抢占旧录制
   function startRecording(username, videoEl) {
     if (videoEl.dataset.bfRecording || videoEl.ended) return;
@@ -495,14 +564,14 @@
     pageFetch(src).then(r => r.blob()).then(blob => {
       if (!blob || blob.size < 65536) {
         blobBusy = false;
-        trySegFullCapture(username, () => startRecording(username, videoEl)); // MSE 流：分片拼装 → 补全 GET → 实时录制
+        trySegFullCapture(username, () => tryActualLinkCapture(username, () => startRecording(username, videoEl)));
         return;
       }
       if (blob.size > 150 * 1024 * 1024) { finish('🎬 视频超过 150MB，已跳过'); return; }
       uploadVideoBlob(username, blob, msg => finish(msg));
     }).catch(() => {
       blobBusy = false;
-      trySegFullCapture(username, () => startRecording(username, videoEl));
+      trySegFullCapture(username, () => tryActualLinkCapture(username, () => startRecording(username, videoEl)));
     });
   }
 
@@ -542,7 +611,8 @@
   }
 
   // ─── 定时器 ──────────────────────────────────────────────────────────────
-  hookNetwork(); // 尽早旁听播放器的视频分片请求
+  hookNetwork();       // 旁听播放器的视频分片请求（用于零请求拼装）
+  initPerfObserver();  // 记录播放器的实际视频链接（用于完整 GET 下载）
   setInterval(scan, 1500);
   setInterval(() => { flush(); processBlobQueue(); }, 5000);
   scan();
