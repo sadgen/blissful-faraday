@@ -238,45 +238,12 @@ export default function App() {
     }
   };
 
-  const [deletedAccounts, setDeletedAccounts] = useState([]);
-
-  const fetchDeletedAccounts = useCallback(async () => {
-    try {
-      const data = await safeFetchJSON('/api/collection/deleted');
-      setDeletedAccounts(data.usernames || []);
-    } catch (err) {
-      if (err.isStaticFallback) {
-        setDeletedAccounts([]);
-      }
-    }
-  }, []);
-
-  const handleRestoreAccount = useCallback(async (username) => {
-    try {
-      const res = await fetch('/api/collection/restore', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username })
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        throw new Error(data.error || '恢复失败');
-      }
-      await fetchDeletedAccounts();
-      await fetchCollections();
-    } catch (err) {
-      console.error('Failed to restore account:', err);
-      alert(`恢复失败: ${err.message}`);
-    }
-  }, [fetchDeletedAccounts, fetchCollections]);
-
   // Fetch admin config automatically on settings open
   useEffect(() => {
     if (isSettingsOpen && isAuthenticated) {
       fetchAdminConfig();
-      fetchDeletedAccounts();
     }
-  }, [isSettingsOpen, isAuthenticated, fetchAdminConfig, fetchDeletedAccounts]);
+  }, [isSettingsOpen, isAuthenticated, fetchAdminConfig]);
 
   // Initial check
   useEffect(() => {
@@ -1009,8 +976,6 @@ export default function App() {
           setVideoSpeed={setVideoSpeed}
           imageSort={imageSort}
           setImageSort={setImageSort}
-          deletedAccounts={deletedAccounts}
-          onRestoreAccount={handleRestoreAccount}
         />
       </ErrorBoundary>
     );
@@ -1085,8 +1050,6 @@ export default function App() {
       setVideoSpeed={setVideoSpeed}
       imageSort={imageSort}
       setImageSort={setImageSort}
-      deletedAccounts={deletedAccounts}
-      onRestoreAccount={handleRestoreAccount}
     />
     </ErrorBoundary>
   );

@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { 
   Grid, Compass, Sliders, FolderOpen,
-  RefreshCw, Trash2, Shuffle, ZoomIn, ZoomOut, Check, History, Shield, RotateCcw
+  RefreshCw, Trash2, Shuffle, ZoomIn, ZoomOut, Check, History, Shield
 } from 'lucide-react';
 import SecurityCenter from './SecurityCenter';
 
@@ -46,8 +46,6 @@ export default function MobileControlSheet({
   onLogout,
   isSyncMode,
   setIsSyncMode,
-  deletedAccounts = [],
-  onRestoreAccount,
   videoSpeed,
   setVideoSpeed,
   imageSort,
@@ -343,39 +341,7 @@ export default function MobileControlSheet({
                 </button>
               </div>
 
-              {/* Deleted Accounts Section */}
-              <div className="mobile-sheet-section">
-                <div className="mobile-sheet-section-title">
-                  <Trash2 size={14} /> 已删除账号
-                </div>
-                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 8 }}>
-                  以下账号已从本地删除，可随时恢复重新下载。
-                </div>
-                {deletedAccounts.length === 0 ? (
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic', padding: '8px 0' }}>
-                    暂无已删除的账号
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto' }}>
-                    {deletedAccounts.map((username, idx) => (
-                      <div key={idx} style={{
-                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                        padding: '6px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: 6,
-                        fontSize: '0.75rem'
-                      }}>
-                        <span style={{ color: 'var(--text-primary)', fontFamily: 'monospace' }}>{username}</span>
-                        <button onClick={() => onRestoreAccount(username)} style={{
-                          background: 'rgba(34, 197, 94, 0.15)', border: '1px solid rgba(34, 197, 94, 0.2)',
-                          color: '#22c55e', padding: '3px 10px', borderRadius: 5, cursor: 'pointer',
-                          fontSize: '0.7rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4
-                        }}>
-                          <RotateCcw size={11} /> 恢复
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+
 
               {/* SECTION E: Folder Scan Path Configuration */}
               <div className="mobile-sheet-section">

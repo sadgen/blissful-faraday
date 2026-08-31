@@ -155,8 +155,6 @@ export default function MobileLayout({
   setVideoSpeed,
   imageSort,
   setImageSort,
-  deletedAccounts = [],
-  onRestoreAccount,
 }) {
   const [showZoomSlider, setShowZoomSlider] = useState(false);
   const sliderTimeoutRef = useRef(null);
@@ -477,8 +475,6 @@ export default function MobileLayout({
         onLogout={onLogout}
         isSyncMode={isSyncMode}
         setIsSyncMode={setIsSyncMode}
-        deletedAccounts={deletedAccounts}
-        onRestoreAccount={onRestoreAccount}
         videoSpeed={videoSpeed}
         setVideoSpeed={setVideoSpeed}
         imageSort={imageSort}

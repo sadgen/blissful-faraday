@@ -926,27 +926,6 @@ export function createApiHandler() {
         }
         if (fs.existsSync(resolvedPath)) fs.rmSync(resolvedPath, { recursive: true, force: true });
 
-        // Remove from accounts.json
-        const accountsPath = path.join(os.homedir(), 'Projects', 'instagram-scraper', 'accounts.json');
-        if (fs.existsSync(accountsPath)) {
-          try {
-            const accData = JSON.parse(fs.readFileSync(accountsPath, 'utf8'));
-            if (Array.isArray(accData)) {
-              fs.writeFileSync(accountsPath, JSON.stringify({
-                accounts: accData.filter(e => (typeof e === 'string' ? e : e.username) !== collection),
-                deleted: [collection],
-              }, null, 2), 'utf8');
-            } else {
-              if (!accData.deleted) accData.deleted = [];
-              accData.accounts = (accData.accounts || []).filter(
-                e => (typeof e === 'string' ? e : e.username) !== collection
-              );
-              if (!accData.deleted.includes(collection)) accData.deleted.push(collection);
-              fs.writeFileSync(accountsPath, JSON.stringify(accData, null, 2), 'utf8');
-            }
-          } catch (e) { console.warn(`[Delete] Failed to update accounts.json: ${e.message}`); }
-        }
-
         dirCollectionsCache.delete(activeResourcesDir);
         dirMtimeCache.delete(activeResourcesDir);
         dirImagesCache.delete(activeResourcesDir);
@@ -958,62 +937,6 @@ export function createApiHandler() {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
-      return;
-    }
-
-    // ── GET /api/collection/deleted ─────────────────────────────────────
-    if (url.pathname === '/api/collection/deleted' && req.method === 'GET') {
-      try {
-        const accountsPath = path.join(os.homedir(), 'Projects', 'instagram-scraper', 'accounts.json');
-        if (!fs.existsSync(accountsPath)) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ usernames: [] }));
-          return;
-        }
-        const accData = JSON.parse(fs.readFileSync(accountsPath, 'utf8'));
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ usernames: accData.deleted || [] }));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-      return;
-    }
-
-    // ── POST /api/collection/restore ────────────────────────────────────
-    if (url.pathname === '/api/collection/restore' && req.method === 'POST') {
-      if (!requireAuth(req, res, authConfig)) return;
-      let body = '';
-      req.on('data', chunk => body += chunk.toString());
-      req.on('end', () => {
-        try {
-          const { username } = JSON.parse(body);
-          if (!username) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'username is required' }));
-            return;
-          }
-          const accountsPath = path.join(os.homedir(), 'Projects', 'instagram-scraper', 'accounts.json');
-          if (!fs.existsSync(accountsPath)) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: true }));
-            return;
-          }
-          const accData = JSON.parse(fs.readFileSync(accountsPath, 'utf8'));
-          if (!accData.deleted) accData.deleted = [];
-          if (!accData.accounts) accData.accounts = [];
-          accData.deleted = accData.deleted.filter(u => u !== username);
-          if (!accData.accounts.some(e => (typeof e === 'string' ? e : e.username) === username)) {
-            accData.accounts.push(username);
-          }
-          fs.writeFileSync(accountsPath, JSON.stringify(accData, null, 2), 'utf8');
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: true }));
-        } catch (err) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err.message }));
-        }
-      });
       return;
     }
 
