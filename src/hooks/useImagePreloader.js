@@ -309,11 +309,28 @@ export default function useImagePreloader({
       });
   }, [preloadImages, scheduleOutgoingClear]);
 
+  // Remove a single image from preloader state & cache
+  const removeImage = useCallback((imgNameToRemove) => {
+    setImages(prev => prev.filter(img => img !== imgNameToRemove));
+    preloadCacheRef.current.delete(`${currentCollName}:${imgNameToRemove}`);
+  }, [currentCollName]);
+
+  // Restore a single image back to preloader state
+  const restoreImage = useCallback((imgNameToRestore, atIndex = 0) => {
+    setImages(prev => {
+      if (prev.includes(imgNameToRestore)) return prev;
+      const next = [...prev];
+      const insertAt = Math.min(Math.max(0, atIndex), next.length);
+      next.splice(insertAt, 0, imgNameToRestore);
+      return next;
+    });
+  }, []);
+
   // Build video file names set for the current collection
   const videoFileNames = new Set(images.filter(isVideoFile));
 
   return {
-    images, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
+    images, setImages, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
     isLoadingImages, loadError, tileAspectRatio,
     imagesRef, activeIdxRef, shouldStartFromLastRef,
     preloadAndAdvance, preloadImages, getImageDimensions, preloadCacheRef,

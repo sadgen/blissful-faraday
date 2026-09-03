@@ -22,3 +22,5 @@ Thumbs.db
 # User resources (ignore all sub-folders of resources, preserving the resources folder itself)
 resources/
 test/
+# Mimosa review artifacts
+.mimosa/

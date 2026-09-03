@@ -20,7 +20,25 @@ export default defineConfig({
     port: 3000,
     open: true,
     allowedHosts: ['gallery.example.com', 'localhost', '.example.com', '.local'],
-    hmr: false
+    hmr: false,
+    watch: {
+      ignored: [
+        '**/.scan-directory.json',
+        '**/.auth-config.json',
+        '**/.collection-cache.json',
+        '**/resources/**',
+        '**/instagram-scraped/**',
+        '**/.mimosa/**',
+        '**/.git/**',
+        '**/*.jpg',
+        '**/*.jpeg',
+        '**/*.png',
+        '**/*.webp',
+        '**/*.mp4',
+        '**/*.webm',
+        '**/*.gif'
+      ]
+    }
   },
   preview: {
     host: '0.0.0.0',

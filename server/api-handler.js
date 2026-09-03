@@ -906,33 +906,88 @@ export function createApiHandler() {
       return;
     }
 
-    // ── POST /api/collection/delete?collection=xxx ──────────────────────
+    // ── POST /api/collection/delete?collection=xxx[&name=yyy] ────────────
     if (url.pathname === '/api/collection/delete' && req.method === 'POST') {
       const collection = url.searchParams.get('collection');
+      const filename = url.searchParams.get('name') || url.searchParams.get('file');
       if (!collection) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing parameter: collection is required.' }));
         return;
       }
       try {
-        const instagramDir = path.join(os.homedir(), 'Pictures', 'instagram-scraped');
-        const collectionPath = path.join(instagramDir, collection);
+        const collectionPath = path.join(activeResourcesDir, collection);
         const resolvedPath = path.resolve(collectionPath);
-        const resolvedBase = path.resolve(instagramDir);
-        if (!resolvedPath.startsWith(resolvedBase)) {
+        const resolvedBase = path.resolve(activeResourcesDir);
+        if (!isPathWithin(resolvedPath, resolvedBase)) {
           res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Access Denied: Path is outside the instagram-scraped folder.' }));
+          res.end(JSON.stringify({ error: 'Access Denied: Path is outside the resources folder.' }));
           return;
         }
-        if (fs.existsSync(resolvedPath)) fs.rmSync(resolvedPath, { recursive: true, force: true });
 
-        dirCollectionsCache.delete(activeResourcesDir);
-        dirMtimeCache.delete(activeResourcesDir);
-        dirImagesCache.delete(activeResourcesDir);
-        clearPersistentCache(activeResourcesDir);
+        const imageExtensions = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.mp4', '.webm']);
 
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
+        if (filename) {
+          const filePath = path.join(resolvedPath, filename);
+          const resolvedFilePath = path.resolve(filePath);
+          if (!isPathWithin(resolvedFilePath, resolvedPath)) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Access Denied: File is outside the collection folder.' }));
+            return;
+          }
+
+          if (fs.existsSync(resolvedFilePath)) {
+            fs.unlinkSync(resolvedFilePath);
+          }
+
+          let remainingFiles = [];
+          if (fs.existsSync(resolvedPath)) {
+            remainingFiles = fs.readdirSync(resolvedPath).filter(
+              f => !f.startsWith('.') && imageExtensions.has(path.extname(f).toLowerCase())
+            );
+          }
+
+          let folderDeleted = false;
+          if (remainingFiles.length === 0) {
+            if (fs.existsSync(resolvedPath)) {
+              fs.rmSync(resolvedPath, { recursive: true, force: true });
+            }
+            folderDeleted = true;
+            dirCollectionsCache.delete(activeResourcesDir);
+            dirMtimeCache.delete(activeResourcesDir);
+            dirImagesCache.delete(activeResourcesDir);
+            clearPersistentCache(activeResourcesDir);
+          } else {
+            const dirImages = dirImagesCache.get(activeResourcesDir);
+            if (dirImages && dirImages.has(collection)) {
+              dirImages.set(collection, remainingFiles);
+            }
+            const dirColl = dirCollectionsCache.get(activeResourcesDir);
+            if (dirColl && dirImages) {
+              savePersistentCache(activeResourcesDir, dirColl, dirImages);
+            }
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            folderDeleted,
+            remainingCount: remainingFiles.length,
+            deletedFile: filename
+          }));
+        } else {
+          if (fs.existsSync(resolvedPath)) {
+            fs.rmSync(resolvedPath, { recursive: true, force: true });
+          }
+
+          dirCollectionsCache.delete(activeResourcesDir);
+          dirMtimeCache.delete(activeResourcesDir);
+          dirImagesCache.delete(activeResourcesDir);
+          clearPersistentCache(activeResourcesDir);
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, folderDeleted: true, remainingCount: 0 }));
+        }
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));

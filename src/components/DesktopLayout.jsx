@@ -76,6 +76,7 @@ export default function DesktopLayout({
   imageSort,
   setImageSort,
   dirResetKey,
+  onQueueDelete,
 }) {
   const [isHistoryOpen, setIsHistoryOpen] = React.useState(false);
   const historyRef = React.useRef(null);
@@ -293,6 +294,7 @@ export default function DesktopLayout({
                     imageSort={imageSort}
                     fetchCollections={fetchCollections}
                     onRequestNextCollection={consumeNext}
+                    onQueueDelete={onQueueDelete}
                   />
                 </ErrorBoundary>
               </div>

@@ -3,6 +3,7 @@ import {
   Play, Pause, ChevronRight, ChevronLeft,
   Maximize2, Minimize2, Settings, Shuffle, HelpCircle, Trash2
 } from 'lucide-react';
+import { isVideoFile } from '../utils/imageHelpers';
 import useImagePreloader from '../hooks/useImagePreloader';
 import useSlideshowPlayback from '../hooks/useSlideshowPlayback';
 import useTileDrag from '../hooks/useTileDrag';
@@ -32,6 +33,7 @@ export default function SlideshowTile({
   imageSort,
   fetchCollections,
   onRequestNextCollection,
+  onQueueDelete,
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [isMaximized, setIsMaximized] = useState(false);
@@ -58,25 +60,6 @@ export default function SlideshowTile({
     return () => { cancelled = true; };
   }, [currentCollName]);
 
-  const handleDelete = async () => {
-    if (!window.confirm(`确定要删除图集 "${currentCollName}" 吗？\n\n这将永久删除该文件夹及其所有图片。`)) return;
-    setIsDeleting(true);
-    try {
-      const res = await fetch(`/api/collection/delete?collection=${encodeURIComponent(currentCollName)}`, { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        throw new Error(data.error || '删除失败');
-      }
-      if (fetchCollections) {
-        await fetchCollections();
-      }
-    } catch (err) {
-      alert(`删除失败: ${err.message}`);
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
   // Refs needed by both hooks
   const currentCollNameRef = useRef(currentCollName);
   const collectionsRef = useRef(collections);
@@ -95,7 +78,7 @@ export default function SlideshowTile({
 
   // --- Hook 1: Image Preloader ---
   const {
-    images, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
+    images, setImages, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
     isLoadingImages, loadError,
     imagesRef, activeIdxRef, shouldStartFromLastRef,
     preloadAndAdvance,
@@ -150,6 +133,49 @@ export default function SlideshowTile({
     syncTrigger,
     onRequestNextCollection,
   });
+
+  const handleDelete = (e) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (images.length === 0 || activeIdx < 0 || activeIdx >= images.length) return;
+    const currentMediaName = images[activeIdx];
+    const currentColl = currentCollName;
+    const currentIdx = activeIdx;
+    const isVideo = isVideoFile(currentMediaName) || videoFileNames.has(currentMediaName);
+    const isLastMedia = images.length <= 1;
+
+    if (isLastMedia) {
+      skipToNextCollection(1);
+    } else {
+      removeImage(currentMediaName);
+      if (activeIdx >= images.length - 1) {
+        setActiveIdx(Math.max(0, images.length - 2));
+      }
+      setOutgoingIdx(null);
+    }
+
+    if (onQueueDelete) {
+      onQueueDelete({
+        collection: currentColl,
+        name: currentMediaName,
+        isVideo,
+        isLastMedia,
+        onUndo: () => {
+          if (isLastMedia) {
+            setCurrentCollName(currentColl);
+            if (onCollectionChange) onCollectionChange(tileId, currentColl);
+          } else {
+            if (currentCollName === currentColl) {
+              restoreImage(currentMediaName, currentIdx);
+              setActiveIdx(currentIdx);
+            }
+          }
+        }
+      });
+    }
+  };
 
   // --- Hook 3: Tile Drag ---
   const {
@@ -398,11 +424,13 @@ export default function SlideshowTile({
           <div className="tile-controls-group">
             {!isMaximized && (
               <button
+                type="button"
                 className="tile-mini-btn"
                 onClick={handleDelete}
-                disabled={isDeleting}
-                title="删除此图集"
-                style={{ color: isDeleting ? 'var(--text-muted)' : '#ef4444' }}
+                onMouseDown={(e) => e.stopPropagation()}
+                disabled={isDeleting || images.length === 0}
+                title={images.length > 0 ? `删除当前${(isVideoFile(images[activeIdx] || '') || videoFileNames.has(images[activeIdx])) ? '视频' : '图片'}` : '删除'}
+                style={{ color: isDeleting || images.length === 0 ? 'var(--text-muted)' : '#ef4444' }}
               >
                 <Trash2 size={14} />
               </button>

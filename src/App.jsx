@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import DesktopLayout from './components/DesktopLayout';
 import MobileLayout from './components/MobileLayout';
 import ErrorBoundary from './components/ErrorBoundary';
+import UndoToast from './components/UndoToast';
+import useDeleteUndoManager from './hooks/useDeleteUndoManager';
 import { RefreshCw } from 'lucide-react';
 
 import LoginOverlay from './components/LoginOverlay';
@@ -238,6 +240,8 @@ export default function App() {
     }
   };
 
+  const { toasts, queueDelete } = useDeleteUndoManager(fetchCollections);
+
   // Fetch admin config automatically on settings open
   useEffect(() => {
     if (isSettingsOpen && isAuthenticated) {
@@ -469,8 +473,8 @@ export default function App() {
       const col = i % cols;
       const row = Math.floor(i / cols);
       
-      // Get aspect ratio for this tile (default to 16:9 = 1.78)
-      const aspectRatio = tileAspectRatios[i] || 1.78;
+      // Get aspect ratio for this tile (default to 9:16 portrait)
+      const aspectRatio = tileAspectRatios[i] || (9 / 16);
       
       // Calculate height based on width and aspect ratio
       // Height = Width / AspectRatio
@@ -513,8 +517,8 @@ export default function App() {
     const scaledPositions = {};
     
     Object.entries(tilePositions).forEach(([index, pos]) => {
-      // Get aspect ratio from tileAspectRatios
-      const aspectRatio = tileAspectRatios[index] || 1.78;
+      // Get aspect ratio from tileAspectRatios (default to 9:16 portrait)
+      const aspectRatio = tileAspectRatios[index] || (9 / 16);
       
       // Scale only the width
       const scaledWidth = pos.baseWidth * zoomScale;
@@ -749,17 +753,17 @@ export default function App() {
 
   const activeTileCount = isAutoTiling ? (activeCollections.length || 1) : tileCount;
 
-  // Sync displayed collections when active/default collections change
+  const prevScanDirRef = useRef(scanDirectory);
+  // Sync displayed collections only on initial load or when scanDirectory truly switches
   useEffect(() => {
-    setDisplayedCollections(activeCollections);
-  }, [activeCollections]);
-
-  // Reset tile state only when underlying collection data changes (new scan / dir change),
-  // NOT when tile count changes — otherwise existing tiles won't re-report ready
-  // and allTilesReady stays false forever, killing the sync timer.
-  useEffect(() => {
-    setDirResetKey(k => k + 1);
-  }, [collections]);
+    if (prevScanDirRef.current !== scanDirectory) {
+      prevScanDirRef.current = scanDirectory;
+      setDirResetKey(k => k + 1);
+      setDisplayedCollections(activeCollections);
+    } else if (displayedCollections.length === 0 && activeCollections.length > 0) {
+      setDisplayedCollections(activeCollections);
+    }
+  }, [scanDirectory, activeCollections, displayedCollections.length]);
 
   // Handle folder change for a specific tile slot
   const handleCollectionChangeForTile = useCallback((tileId, newCollName) => {
@@ -976,7 +980,9 @@ export default function App() {
           setVideoSpeed={setVideoSpeed}
           imageSort={imageSort}
           setImageSort={setImageSort}
+          onQueueDelete={queueDelete}
         />
+        <UndoToast toasts={toasts} />
       </ErrorBoundary>
     );
   }
@@ -1050,7 +1056,9 @@ export default function App() {
       setVideoSpeed={setVideoSpeed}
       imageSort={imageSort}
       setImageSort={setImageSort}
+      onQueueDelete={queueDelete}
     />
+    <UndoToast toasts={toasts} />
     </ErrorBoundary>
   );
 }

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.0.0
-// @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。只收集页面上已加载的媒体地址，不产生额外对 IG 的请求。
+// @version      1.1.0
+// @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。支持多图贴文秒级全量原图提取与网页端多图横向并排免点击预览。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @match        https://www.instagram.com/*
@@ -33,6 +33,17 @@
     const next = GM_getValue('fullDlEnabled', true) === false;
     GM_setValue('fullDlEnabled', next);
     alert(next ? '已开启：流式视频会用实际链接完整下载（原档画质，每视频 1 次请求）' : '已关闭：流式视频退回实时录制（零额外请求，画质=播放画面）');
+  });
+
+  // 「多图卡片横向并排预览」：时间线遇到多图帖子时，在卡片中横向平铺展示最多 4 张图片，免去翻页点击
+  const CAROUSEL_PREVIEW_ENABLED = () => GM_getValue('carouselPreviewEnabled', true) !== false;
+  GM_registerMenuCommand((GM_getValue('carouselPreviewEnabled', true) !== false ? '✅' : '⛔') + ' 切换：多图横向并排预览（最多 4 张）', () => {
+    const next = GM_getValue('carouselPreviewEnabled', true) === false;
+    GM_setValue('carouselPreviewEnabled', next);
+    alert(next ? '已开启：多图帖子将直接横向并排展示最多 4 张，无需手动点翻页' : '已关闭：恢复 Instagram 默认单图轮播');
+    if (!next) {
+      document.querySelectorAll('.bf-carousel-preview').forEach(el => el.remove());
+    }
   });
   const ADDRESS_PROMPT = 'blissful-faraday 画廊地址（填好后需在该浏览器登录一次画廊）\n'
     + '· 推荐：https://gallery.example.com:8443 （地址固定，任何网络可用）\n'
@@ -230,16 +241,35 @@
     return 1;
   }
 
-  // ─── React Fiber/Props 官方高清直链探查 ──────────────────────────────────
-  // Instagram 前端在渲染帖子时，已经把包含高清 mp4 直链的 GraphQL 数据缓存在
-  // React 组件的 Fiber / Props 属性中（包含 video_versions 数组）。
-  // 探查出真实直链后直接交由服务端后台下载完整原档，无需等待播放完成。
-  function extractDirectVideoUrls(videoEl) {
-    const urls = new Set();
+  // ─── React Fiber/Props 官方多图与高清直链探查 ────────────────────────────
+  // Instagram 前端渲染帖子时，已将该帖完整元数据（包含 carousel_media 多图列表、
+  // 各图最高清原图直链、video_versions 高清 mp4）缓存在 React 组件的 Fiber / Props 树中。
+  // 一次探查即可全量秒级提取多图的所有图片和视频，无需等待 DOM 渲染或手动翻页。
+  function extractMediaFromFiber(rootEl) {
+    const images = [];
+    const videos = [];
+    const carouselItems = []; // [ { type: 'image'|'video', url, poster, thumbUrl } ]
     const visited = new Set();
+    const seenUrls = new Set();
+
+    function addImg(url, thumbUrl) {
+      if (!url || typeof url !== 'string' || !/^https:/.test(url) || seenUrls.has(url)) return;
+      try { if (!IG_CDN.test(new URL(url).hostname)) return; } catch { return; }
+      seenUrls.add(url);
+      images.push(url);
+      carouselItems.push({ type: 'image', url, thumbUrl: thumbUrl || url });
+    }
+
+    function addVid(url, poster, thumbUrl) {
+      if (!url || typeof url !== 'string' || !/^https:/.test(url) || !isVideoEntryUrl(url) || seenUrls.has(url)) return;
+      seenUrls.add(url);
+      videos.push({ url, poster: poster || undefined });
+      carouselItems.push({ type: 'video', url, poster, thumbUrl: thumbUrl || poster || url });
+    }
 
     function searchObj(obj, depth = 0) {
-      if (!obj || typeof obj !== 'object' || depth > 8 || visited.has(obj)) return;
+      if (!obj || typeof obj !== 'object' || depth > 9 || visited.has(obj)) return;
+      if (typeof Element !== 'undefined' && (obj instanceof Element || obj instanceof Node)) return;
       visited.add(obj);
 
       if (Array.isArray(obj)) {
@@ -247,26 +277,65 @@
         return;
       }
 
-      // 命中标准 GraphQL video_versions 结构
-      if (Array.isArray(obj.video_versions)) {
-        for (const v of obj.video_versions) {
-          if (v && typeof v.url === 'string' && /^https:/.test(v.url) && isVideoEntryUrl(v.url)) {
-            urls.add(v.url);
+      // 1. 命中标准 GraphQL / REST carousel_media 多图/多视频结构
+      if (Array.isArray(obj.carousel_media) && obj.carousel_media.length > 0) {
+        for (const item of obj.carousel_media) {
+          if (!item || typeof item !== 'object') continue;
+          let bestImg = null, thumb = null;
+          if (item.image_versions2 && Array.isArray(item.image_versions2.candidates)) {
+            const cands = item.image_versions2.candidates;
+            bestImg = cands[0]?.url;
+            thumb = cands[cands.length - 1]?.url || bestImg;
+          }
+          if (Array.isArray(item.video_versions) && item.video_versions.length > 0) {
+            const bestV = item.video_versions[0];
+            if (bestV && bestV.url) addVid(bestV.url, bestImg, thumb);
+          } else if (bestImg) {
+            addImg(bestImg, thumb);
           }
         }
       }
 
-      // 常见直链字段
+      // 2. 命中 GraphQL edge_sidecar_to_children 结构
+      if (obj.edge_sidecar_to_children && Array.isArray(obj.edge_sidecar_to_children.edges)) {
+        for (const edge of obj.edge_sidecar_to_children.edges) {
+          const node = edge && edge.node;
+          if (!node) continue;
+          const bestImg = node.display_url || (Array.isArray(node.display_resources) && node.display_resources[node.display_resources.length - 1]?.src);
+          const thumb = (Array.isArray(node.display_resources) && node.display_resources[0]?.src) || bestImg;
+          if (node.is_video && node.video_url) {
+            addVid(node.video_url, bestImg, thumb);
+          } else if (bestImg) {
+            addImg(bestImg, thumb);
+          }
+        }
+      }
+
+      // 3. 命中单图 image_versions2
+      if (obj.image_versions2 && Array.isArray(obj.image_versions2.candidates)) {
+        const cands = obj.image_versions2.candidates;
+        const best = cands[0]?.url;
+        const thumb = cands[cands.length - 1]?.url || best;
+        if (best) addImg(best, thumb);
+      }
+
+      // 4. 命中单视频 video_versions
+      if (Array.isArray(obj.video_versions) && obj.video_versions.length > 0) {
+        for (const v of obj.video_versions) {
+          if (v && v.url) addVid(v.url, null, null);
+        }
+      }
+
+      // 5. 常见直链字段
       for (const key of ['video_url', 'videoUrl', 'playback_url', 'progressive_download_url']) {
         if (typeof obj[key] === 'string' && /^https:/.test(obj[key]) && isVideoEntryUrl(obj[key])) {
-          urls.add(obj[key]);
+          addVid(obj[key], null, null);
         }
       }
 
       for (const k in obj) {
         if (Object.prototype.hasOwnProperty.call(obj, k)) {
-          // 避开 DOM 引用循环
-          if (k.startsWith('__react') || k === 'stateNode' || k === 'child' || k === 'sibling' || k === 'memoizedProps' || k === 'memoizedState' || k === 'pendingProps') {
+          if (k.startsWith('__react') || k === 'stateNode' || k === 'child' || k === 'sibling' || k === 'memoizedProps' || k === 'memoizedState' || k === 'pendingProps' || k === 'return') {
             searchObj(obj[k], depth + 1);
           } else if (typeof obj[k] === 'object') {
             searchObj(obj[k], depth + 1);
@@ -276,21 +345,147 @@
     }
 
     try {
-      let cur = videoEl;
+      let cur = rootEl;
       let steps = 0;
-      while (cur && steps < 7) {
+      while (cur && steps < 8) {
         for (const key in cur) {
           if (key.startsWith('__reactFiber') || key.startsWith('__reactProps') || key.startsWith('__reactInternalInstance')) {
             searchObj(cur[key], 0);
           }
         }
-        if (urls.size > 0) break;
+        if (carouselItems.length > 0) break;
         cur = cur.parentElement;
         steps++;
       }
     } catch {}
 
-    return [...urls];
+    return { images, videos, carouselItems };
+  }
+
+  function extractDirectVideoUrls(videoEl) {
+    const res = extractMediaFromFiber(videoEl);
+    return res.videos.map(v => v.url);
+  }
+
+  // ─── 网页端 UI：多图卡片横向并排预览（免去翻页点击）──────────────────────
+  function renderCarouselPreview(container, carouselItems) {
+    if (!CAROUSEL_PREVIEW_ENABLED() || !carouselItems || carouselItems.length <= 1) return;
+    if (container.querySelector('.bf-carousel-preview')) return;
+
+    // 挂载在帖子操作栏（点赞/评论 section）上方，或容器内合适位置
+    const target = container.querySelector('section') || container;
+    const bar = document.createElement('div');
+    bar.className = 'bf-carousel-preview';
+    bar.style.cssText = [
+      'display: grid',
+      `grid-template-columns: repeat(${Math.min(carouselItems.length, 4)}, minmax(0, 1fr))`,
+      'gap: 6px',
+      'padding: 8px 12px 4px',
+      'box-sizing: border-box',
+      'width: 100%',
+      'user-select: none',
+    ].join(';');
+
+    const maxDisplay = 4;
+    const showCount = Math.min(carouselItems.length, maxDisplay);
+    const hasMore = carouselItems.length > maxDisplay;
+
+    for (let i = 0; i < showCount; i++) {
+      const item = carouselItems[i];
+      const isLast = (i === maxDisplay - 1) && hasMore;
+      const card = document.createElement('div');
+      card.style.cssText = [
+        'position: relative',
+        'aspect-ratio: 1 / 1',
+        'border-radius: 8px',
+        'overflow: hidden',
+        'background: rgba(128,128,128,.15)',
+        'cursor: pointer',
+        'border: 1px solid rgba(255,255,255,.14)',
+        'transition: transform .15s ease, border-color .15s ease',
+      ].join(';');
+
+      card.onmouseenter = () => { card.style.transform = 'scale(1.03)'; card.style.borderColor = 'rgba(255,255,255,.5)'; };
+      card.onmouseleave = () => { card.style.transform = 'scale(1)'; card.style.borderColor = 'rgba(255,255,255,.14)'; };
+
+      const img = document.createElement('img');
+      img.src = item.thumbUrl || item.poster || item.url;
+      img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
+      img.loading = 'lazy';
+      card.appendChild(img);
+
+      if (item.type === 'video') {
+        const vidBadge = document.createElement('div');
+        vidBadge.style.cssText = 'position:absolute;top:4px;right:4px;background:rgba(0,0,0,.68);border-radius:4px;padding:2px 5px;font-size:10px;color:#fff;line-height:1.2;font-family:sans-serif;';
+        vidBadge.textContent = '▶ 视频';
+        card.appendChild(vidBadge);
+      }
+
+      if (isLast) {
+        const moreOverlay = document.createElement('div');
+        moreOverlay.style.cssText = [
+          'position: absolute', 'inset: 0',
+          'background: rgba(0,0,0,.62)',
+          'color: #fff',
+          'display: flex', 'align-items: center', 'justify-content: center',
+          'font-size: 14px', 'font-weight: bold', 'font-family: sans-serif',
+          'backdrop-filter: blur(2px)',
+        ].join(';');
+        moreOverlay.textContent = `+${carouselItems.length - 3}`;
+        card.appendChild(moreOverlay);
+      }
+
+      card.title = `第 ${i + 1}/${carouselItems.length} 张（点击新标签页打开高清原图）`;
+      card.onclick = (e) => {
+        e.stopPropagation();
+        window.open(item.url, '_blank');
+      };
+
+      bar.appendChild(card);
+    }
+
+    if (target === container) {
+      container.appendChild(bar);
+    } else {
+      target.parentNode.insertBefore(bar, target);
+    }
+  }
+
+  function harvestFiberMedia(container, pending, username) {
+    let added = 0;
+    const media = extractMediaFromFiber(container);
+    if (!media) return 0;
+
+    // 1. 批量入库图片（多图及单图最高清直链）
+    if (Array.isArray(media.images)) {
+      for (const imgUrl of media.images) {
+        const key = fileKey(imgUrl);
+        if (!key || seenThisSession.has(key) || pending.has(key)) continue;
+        const vpfx = mediaIdPrefix(imgUrl);
+        if (vpfx && videoPrefixes.has(vpfx)) continue;
+        seenThisSession.add(key);
+        pending.set(key, { key, url: imgUrl, alt: fullResCandidates(imgUrl), type: 'image' });
+        added++;
+      }
+    }
+
+    // 2. 批量入库视频
+    if (Array.isArray(media.videos)) {
+      for (const vid of media.videos) {
+        const key = fileKey(vid.url);
+        if (!key || seenThisSession.has(key) || pending.has(key)) continue;
+        seenThisSession.add(key);
+        pending.set(key, { key, url: vid.url, alt: [], type: 'video', poster: vid.poster });
+        added++;
+      }
+    }
+
+    // 3. 挂载多图横向并排预览栏
+    if (Array.isArray(media.carouselItems) && media.carouselItems.length > 1) {
+      renderCarouselPreview(container, media.carouselItems);
+    }
+
+    return added;
   }
 
   function harvestVideo(v, pending, username) {
@@ -351,6 +546,9 @@
       if (!owner) return;
       if (!pendingByUser.has(owner)) pendingByUser.set(owner, new Map());
       const pending = pendingByUser.get(owner);
+      // 先通过 React Fiber 秒级全量提取（含多图所有图片/视频 + 挂载横向预览）
+      added += harvestFiberMedia(article, pending, owner);
+      // DOM 兜底扫描
       article.querySelectorAll('img[srcset], img[src]').forEach(img => { added += harvestImg(img, pending); });
       article.querySelectorAll('video').forEach(v => { added += harvestVideo(v, pending, owner); });
     });
@@ -362,6 +560,7 @@
       if (!owner) return;
       if (!pendingByUser.has(owner)) pendingByUser.set(owner, new Map());
       const pending = pendingByUser.get(owner);
+      added += harvestFiberMedia(dialog, pending, owner);
       dialog.querySelectorAll('img[srcset], img[src]').forEach(img => { added += harvestImg(img, pending); });
       dialog.querySelectorAll('video').forEach(v => { added += harvestVideo(v, pending, owner); });
     });

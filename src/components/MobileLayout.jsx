@@ -155,6 +155,7 @@ export default function MobileLayout({
   setVideoSpeed,
   imageSort,
   setImageSort,
+  onQueueDelete,
 }) {
   const [showZoomSlider, setShowZoomSlider] = useState(false);
   const sliderTimeoutRef = useRef(null);
@@ -382,6 +383,7 @@ export default function MobileLayout({
                     imageSort={imageSort}
                     fetchCollections={fetchCollections}
                     onRequestNextCollection={consumeNext}
+                    onQueueDelete={onQueueDelete}
                   />
                 </ErrorBoundary>
               ))}

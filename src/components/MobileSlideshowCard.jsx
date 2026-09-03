@@ -25,6 +25,7 @@ export default function MobileSlideshowCard({
   imageSort = 'name',
   fetchCollections,
   onRequestNextCollection,
+  onQueueDelete,
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [images, setImages] = useState([]);
@@ -84,25 +85,6 @@ export default function MobileSlideshowCard({
       .catch(() => { if (!cancelled) setCollectionInfo(null); });
     return () => { cancelled = true; };
   }, [currentCollName]);
-
-  const handleDelete = useCallback(async () => {
-    if (!window.confirm(`确定要删除图集 "${currentCollName}" 吗？\n\n这将永久删除该文件夹及其所有图片。`)) return;
-    setIsDeleting(true);
-    try {
-      const res = await fetch(`/api/collection/delete?collection=${encodeURIComponent(currentCollName)}`, { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        throw new Error(data.error || '删除失败');
-      }
-      if (fetchCollections) {
-        await fetchCollections();
-      }
-    } catch (err) {
-      alert(`删除失败: ${err.message}`);
-    } finally {
-      setIsDeleting(false);
-    }
-  }, [currentCollName, fetchCollections]);
 
   const transitionEffect = localTransitionEffect || globalTransitionEffect || 'none';
 
@@ -602,6 +584,58 @@ export default function MobileSlideshowCard({
     resetProgressBar();
   };
 
+  const handleDelete = useCallback((e) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (images.length === 0 || activeIdx < 0 || activeIdx >= images.length) return;
+    const currentMediaName = images[activeIdx];
+    const currentColl = currentCollName;
+    const currentIdx = activeIdx;
+    const isVideo = isVideoFile(currentMediaName) || videoFileNames.has(currentMediaName);
+    const isLastMedia = images.length <= 1;
+
+    if (isLastMedia) {
+      skipToNextCollection(1);
+    } else {
+      preloadCacheRef.current.delete(`${currentCollName}:${currentMediaName}`);
+      setImages(prev => prev.filter(img => img !== currentMediaName));
+      if (activeIdx >= images.length - 1) {
+        setActiveIdx(Math.max(0, images.length - 2));
+      }
+      setOutgoingIdx(null);
+      resetProgressBar();
+    }
+
+    if (onQueueDelete) {
+      onQueueDelete({
+        collection: currentColl,
+        name: currentMediaName,
+        isVideo,
+        isLastMedia,
+        onUndo: () => {
+          if (isLastMedia) {
+            setCurrentCollName(currentColl);
+            if (onCollectionChange) onCollectionChange(tileId, currentColl);
+          } else {
+            if (currentCollName === currentColl) {
+              setImages(prev => {
+                if (prev.includes(currentMediaName)) return prev;
+                const next = [...prev];
+                const insertAt = Math.min(Math.max(0, currentIdx), next.length);
+                next.splice(insertAt, 0, currentMediaName);
+                return next;
+              });
+              setActiveIdx(currentIdx);
+              resetProgressBar();
+            }
+          }
+        }
+      });
+    }
+  }, [currentCollName, images, activeIdx, videoFileNames, skipToNextCollection, resetProgressBar, onQueueDelete, onCollectionChange, tileId]);
+
   // TOUCH GESTURE HANDLERS
   const handleTouchStart = (e) => {
     if (e.touches.length !== 1) return;
@@ -870,11 +904,14 @@ export default function MobileSlideshowCard({
                 {activeIdx + 1}/{images.length}
               </span>
               <button
+                type="button"
                 className="tile-mini-btn"
                 onClick={handleDelete}
-                disabled={isDeleting}
-                title="删除此图集"
-                style={{ color: isDeleting ? 'rgba(255,255,255,0.4)' : '#ef4444', flexShrink: 0 }}
+                onTouchStart={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                disabled={isDeleting || images.length === 0}
+                title={images.length > 0 ? `删除当前${(isVideoFile(images[activeIdx] || '') || videoFileNames.has(images[activeIdx])) ? '视频' : '图片'}` : '删除'}
+                style={{ color: isDeleting || images.length === 0 ? 'rgba(255,255,255,0.4)' : '#ef4444', flexShrink: 0 }}
               >
                 <Trash2 size={13} />
               </button>
