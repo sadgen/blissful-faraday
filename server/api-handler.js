@@ -386,9 +386,7 @@ export function createApiHandler() {
     // ── Global auth interceptor ────────────────────────────────────────
     if (url.pathname.startsWith('/api/') &&
         !url.pathname.startsWith('/api/auth/') &&
-        !url.pathname.startsWith('/api/userscript/') &&
-        url.pathname !== '/api/cache/clear' &&
-        url.pathname !== '/api/collection/info') {
+        !url.pathname.startsWith('/api/userscript/')) {
       if (authConfig.enabled && !getSession(req, authConfig)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'UNAUTHORIZED' }));
@@ -414,7 +412,18 @@ export function createApiHandler() {
           'Cache-Control': 'no-cache, no-store, must-revalidate',
         });
         if (req.method === 'HEAD') { res.end(); return; }
-        fs.createReadStream(targetPath).pipe(res);
+        // Substitute template domain with the real deployment URL so installed
+        // userscripts keep auto-updating against the private reverse proxy
+        let content = fs.readFileSync(targetPath, 'utf8');
+        const publicUrl = process.env.GALLERY_PUBLIC_URL;
+        if (publicUrl) {
+          const origin = publicUrl.replace(/\/+$/, '');
+          let hostname = origin;
+          try { hostname = new URL(origin).hostname; } catch { /* keep raw */ }
+          content = content.split('https://gallery.example.com:8443').join(origin)
+                           .split('gallery.example.com').join(hostname);
+        }
+        res.end(content);
         return;
       }
     }
