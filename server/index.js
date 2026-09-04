@@ -21,6 +21,17 @@ const distDir = path.resolve(__dirname, '..', 'dist');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
+// Load .env.local (gitignored) for deployment-specific settings (e.g. GALLERY_PUBLIC_URL)
+const envLocalPath = path.resolve(__dirname, '..', '.env.local');
+if (fs.existsSync(envLocalPath)) {
+  for (const line of fs.readFileSync(envLocalPath, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (m && !(m[1] in process.env)) {
+      process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
+  }
+}
+
 // ─── MIME types for static files ─────────────────────────────────────────
 
 const MIME_TYPES = {
