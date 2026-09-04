@@ -3,6 +3,7 @@ import { Play, Pause, Settings, Image as ImageIcon, ZoomIn, ZoomOut } from 'luci
 import MobileSlideshowCard from './MobileSlideshowCard';
 import ErrorBoundary from './ErrorBoundary';
 import MobileControlSheet from './MobileControlSheet';
+import FaradaySuiteMenu from './FaradaySuiteMenu';
 import '../mobile.css';
 
 // Calculate mobile tile coordinates in viewport percentage space
@@ -416,6 +417,9 @@ export default function MobileLayout({
       {/* 3. Floating Bottom Control Pill */}
       {collections.length > 0 && (
         <div className="mobile-floating-pill">
+          {/* Faraday Suite Switcher */}
+          <FaradaySuiteMenu currentApp="gallery" direction="up" />
+
           {/* Settings Trigger */}
           <button 
             type="button"

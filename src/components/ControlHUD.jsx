@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Play, Pause, Shuffle, Settings, Columns, Image, Sliders, ChevronUp, ChevronDown, Sparkles, ZoomIn, ZoomOut, FolderOpen, ArrowUpDown } from 'lucide-react';
+import FaradaySuiteMenu from './FaradaySuiteMenu';
 
 // Allowed tile counts
 const ALLOWED_TILE_COUNTS = [1, 3, 5, 12];
@@ -351,6 +352,11 @@ export default function ControlHUD({
               style={{ width: '80px', height: '4px', cursor: 'pointer' }}
             />
           </div>
+        </div>
+
+        {/* Faraday Suite Switcher */}
+        <div className="hud-section hud-section-compact">
+          <FaradaySuiteMenu currentApp="gallery" direction="up" />
         </div>
 
         {/* Settings Button */}
