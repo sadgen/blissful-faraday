@@ -1037,19 +1037,23 @@ export function createApiHandler() {
           fs.mkdirSync(targetDir, { recursive: true });
           let downloaded = 0, skipped = 0, failed = 0;
           const videoPrefixSet = new Set();
+          const failedUrls = [];
 
           for (const item of items) {
             try {
               const candidates = [...(Array.isArray(item.alt) ? item.alt : []), item.url]
                 .filter(u => typeof u === 'string' && isHarvestHostAllowed(u));
-              if (!candidates.length) { failed++; continue; }
+              if (!candidates.length) { failed++; failedUrls.push(item.url); continue; }
 
               const base = harvestFilename(item.url, item.type);
-              if (!base) { failed++; continue; }
+              if (!base) { failed++; failedUrls.push(item.url); continue; }
               const finalPath0 = path.join(targetDir, base);
               if (fs.existsSync(finalPath0)) { skipped++; continue; }
 
-              const tmpPath = path.join(targetDir, '.' + base + '.part');
+              // 临时文件按请求加唯一后缀：脚本重试等场景下可能出现同一条媒体的
+              // 并发下载，共享同名 .part 会互相截断，甚至让另一路 rename 时 ENOENT
+              const tmpPath = path.join(targetDir,
+                `.${base}.${process.pid}x${Math.random().toString(36).slice(2, 8)}.part`);
               let ok = false;
               for (const candidate of candidates) {
                 try { ok = await harvestDownload(candidate, tmpPath); } catch { ok = false; }
@@ -1059,6 +1063,7 @@ export function createApiHandler() {
                 console.warn(`[Harvest] 下载失败 @${username}: ${base} ← ${candidates[0]}`);
                 try { fs.unlinkSync(tmpPath); } catch {}
                 failed++;
+                failedUrls.push(item.url);
                 continue;
               }
 
@@ -1087,7 +1092,7 @@ export function createApiHandler() {
                 videoPrefixSet.add(mediaIdPrefix(item.url));
                 videoPrefixSet.add(mediaIdPrefix(item.poster));
               }
-            } catch { failed++; }
+            } catch { failed++; if (typeof item.url === 'string') failedUrls.push(item.url); }
           }
           // 视频入库后删除其封面图，避免"封面 + 视频"重复展示
           removeVideoPosters(targetDir, videoPrefixSet);
@@ -1104,7 +1109,7 @@ export function createApiHandler() {
 
           console.log(`[Harvest] @${username}: 成功 ${downloaded} · 跳过 ${skipped} · 失败 ${failed} / 共 ${items.length}`);
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ success: true, username, downloaded, skipped, failed, total: items.length }));
+          res.end(JSON.stringify({ success: true, username, downloaded, skipped, failed, failedUrls, total: items.length }));
         } catch (err) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message }));

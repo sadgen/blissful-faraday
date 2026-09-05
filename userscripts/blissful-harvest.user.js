@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.2.0
+// @version      1.2.1
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。多图贴文秒级全量提取 + 个人主页旁听接口 JSON 全量采集多图 + 网页端多图横向并排免点击预览。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -139,6 +139,9 @@
   const seenThisSession = new Set();       // fileKey -> 防止重复处理同一媒体
   const pendingByUser = new Map();         // username -> Map(fileKey -> item)
   const failedCount = new Map();           // fileKey -> 连续失败次数（3 次后放弃）
+  const sendingUsers = new Set();          // 正在回传中的用户：服务端串行下载耗时较长，
+                                           // 在途期间不得重发同一批，否则并发重复下载
+                                           // 会互相踩踏临时文件并触发 IG CDN 限流
   const blobQueue = [];                    // 流式视频待中继队列 {username, videoEl}
   const SENT_CAP = 3000;
   const BATCH_MAX = 40;
@@ -677,7 +680,7 @@
   // ─── 上传 ────────────────────────────────────────────────────────────────
   function flush() {
     for (const [username, pending] of pendingByUser) {
-      if (!pending.size) continue;
+      if (!pending.size || sendingUsers.has(username)) continue;
       const sent = loadSent(username);
       const items = [];
       for (const [key, item] of pending) {
@@ -686,17 +689,26 @@
       }
       if (!items.length) continue;
 
+      sendingUsers.add(username);
       GM_xmlhttpRequest({
         method: 'POST',
         url: GALLERY() + '/api/instagram/harvest',
         headers: { 'Content-Type': 'application/json' },
         data: JSON.stringify({ username, items }),
-        timeout: 30000,
+        timeout: 60000,
         onload: res => {
+          sendingUsers.delete(username);
           let data = {};
           try { data = JSON.parse(res.responseText); } catch { }
           if (res.status === 200 && data.success) {
+            // 服务端逐条下载，failedUrls 是本轮下载失败的媒体地址；
+            // 这些条目留在 pending 里等下一轮重试（failedCount 封顶 3 次后放弃）
+            const failedSet = new Set(Array.isArray(data.failedUrls) ? data.failedUrls : []);
             items.forEach(it => {
+              if (failedSet.has(it.url)) {
+                failedCount.set(it.key, (failedCount.get(it.key) || 0) + 1);
+                return;
+              }
               pending.delete(it.key);
               sent.add(it.key);
               failedCount.delete(it.key);
@@ -715,10 +727,12 @@
           updateBadge(username, [...pendingByUser.values()].reduce((n, m) => n + m.size, 0));
         },
         onerror: () => {
+          sendingUsers.delete(username);
           items.forEach(it => failedCount.set(it.key, (failedCount.get(it.key) || 0) + 1));
           flashBadge('画廊未连接（' + GALLERY() + '）');
         },
         ontimeout: () => {
+          sendingUsers.delete(username);
           items.forEach(it => failedCount.set(it.key, (failedCount.get(it.key) || 0) + 1));
           flashBadge('画廊响应超时');
         },
