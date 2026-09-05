@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.1.0
-// @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。支持多图贴文秒级全量原图提取与网页端多图横向并排免点击预览。
+// @version      1.2.0
+// @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。多图贴文秒级全量提取 + 个人主页旁听接口 JSON 全量采集多图 + 网页端多图横向并排免点击预览。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @match        https://www.instagram.com/*
@@ -44,6 +44,18 @@
     if (!next) {
       document.querySelectorAll('.bf-carousel-preview').forEach(el => el.remove());
     }
+  });
+
+  // 「接口 JSON 旁听」：个人主页网格只渲染每个帖子的封面，多图帖的其余图片只存在于
+  // IG 自己的接口响应 JSON 里（web_profile_info / feed/user 分页等，含全部轮播子项）。
+  // 旁听这些页面本来就会发出的响应并从中提取，不产生任何额外对 IG 的请求。
+  const JSON_LISTEN_ENABLED = () => GM_getValue('jsonListenEnabled', true) !== false;
+  GM_registerMenuCommand((GM_getValue('jsonListenEnabled', true) !== false ? '✅' : '⛔') + ' 切换：个人主页多图全量采集（旁听接口 JSON）', () => {
+    const next = GM_getValue('jsonListenEnabled', true) === false;
+    GM_setValue('jsonListenEnabled', next);
+    alert(next
+      ? '已开启：旁听 Instagram 自己的接口响应，主页多图帖的全部图片无需点开即全量入库（零额外请求）'
+      : '已关闭：仅采集页面上实际渲染出来的媒体');
   });
   const ADDRESS_PROMPT = 'blissful-faraday 画廊地址（填好后需在该浏览器登录一次画廊）\n'
     + '· 推荐：https://gallery.example.com:8443 （地址固定，任何网络可用）\n'
@@ -245,12 +257,18 @@
   // Instagram 前端渲染帖子时，已将该帖完整元数据（包含 carousel_media 多图列表、
   // 各图最高清原图直链、video_versions 高清 mp4）缓存在 React 组件的 Fiber / Props 树中。
   // 一次探查即可全量秒级提取多图的所有图片和视频，无需等待 DOM 渲染或手动翻页。
-  function extractMediaFromFiber(rootEl) {
+  // 通用媒体收集器：在任意对象树（React Fiber / 接口 JSON）中查找
+  // carousel_media / edge_sidecar_to_children / image_versions2 / video_versions
+  // 及常见视频直链字段，全量收集图片与视频。visited 集合防止循环引用。
+  function createMediaCollector(maxDepth = 14, opts = {}) {
     const images = [];
     const videos = [];
     const carouselItems = []; // [ { type: 'image'|'video', url, poster, thumbUrl } ]
     const visited = new Set();
     const seenUrls = new Set();
+    // JSON 旁听路径才收集单图节点的 display_url / thumbnail_src；
+    // Fiber 路径不收集（时间线 DOM 里的视频封面没有 DOM 上下文可拦截）
+    const includeDisplayUrl = !!opts.includeDisplayUrl;
 
     function addImg(url, thumbUrl) {
       if (!url || typeof url !== 'string' || !/^https:/.test(url) || seenUrls.has(url)) return;
@@ -268,7 +286,7 @@
     }
 
     function searchObj(obj, depth = 0) {
-      if (!obj || typeof obj !== 'object' || depth > 9 || visited.has(obj)) return;
+      if (!obj || typeof obj !== 'object' || depth > maxDepth || visited.has(obj)) return;
       if (typeof Element !== 'undefined' && (obj instanceof Element || obj instanceof Node)) return;
       visited.add(obj);
 
@@ -333,6 +351,17 @@
         }
       }
 
+      // 6. GraphQL 单图节点的 display_url / thumbnail_src（仅 JSON 旁听路径启用；
+      //    视频节点跳过，避免封面图混入图片库）
+      if (includeDisplayUrl && !obj.is_video) {
+        if (typeof obj.display_url === 'string' && !obj.video_url) {
+          const thumb = Array.isArray(obj.display_resources) && obj.display_resources[0]?.src;
+          addImg(obj.display_url, thumb);
+        } else if (typeof obj.thumbnail_src === 'string') {
+          addImg(obj.thumbnail_src);
+        }
+      }
+
       for (const k in obj) {
         if (Object.prototype.hasOwnProperty.call(obj, k)) {
           if (k.startsWith('__react') || k === 'stateNode' || k === 'child' || k === 'sibling' || k === 'memoizedProps' || k === 'memoizedState' || k === 'pendingProps' || k === 'return') {
@@ -344,22 +373,98 @@
       }
     }
 
+    return { searchObj, images, videos, carouselItems };
+  }
+
+  function extractMediaFromFiber(rootEl) {
+    const col = createMediaCollector();
     try {
       let cur = rootEl;
       let steps = 0;
       while (cur && steps < 8) {
         for (const key in cur) {
           if (key.startsWith('__reactFiber') || key.startsWith('__reactProps') || key.startsWith('__reactInternalInstance')) {
-            searchObj(cur[key], 0);
+            col.searchObj(cur[key], 0);
           }
         }
-        if (carouselItems.length > 0) break;
+        if (col.carouselItems.length > 0) break;
         cur = cur.parentElement;
         steps++;
       }
     } catch {}
 
-    return { images, videos, carouselItems };
+    return { images: col.images, videos: col.videos, carouselItems: col.carouselItems };
+  }
+
+  // ─── 接口 JSON 旁听：个人主页网格多图全量采集 ────────────────────────────
+  // 个人主页网格只为每个帖子渲染封面 <img>，多图帖其余图片只存在于 IG 自己的
+  // 接口响应 JSON 里。旁听 fetch/XHR（页面本来就会发的请求）并提取，零额外请求。
+  function isInstagramApiJsonUrl(urlStr) {
+    try {
+      const u = new URL(urlStr, location.href);
+      if (!/(^|\.)instagram\.com$/i.test(u.hostname)) return false;
+      return /\/api\//.test(u.pathname) || /\/graphql\b/.test(u.pathname);
+    } catch { return false; }
+  }
+
+  // 头像 URL 会以字段形式出现在用户对象里，先剔除避免头像入库
+  function stripProfilePicFields(obj, depth = 0) {
+    if (!obj || typeof obj !== 'object' || depth > 12) return obj;
+    if (Array.isArray(obj)) { obj.forEach(o => stripProfilePicFields(o, depth + 1)); return obj; }
+    for (const k of Object.keys(obj)) {
+      if (/^profile_pic_url/.test(k)) delete obj[k];
+      else if (typeof obj[k] === 'object' && obj[k]) stripProfilePicFields(obj[k], depth + 1);
+    }
+    return obj;
+  }
+
+  // 归属用户名：优先取 JSON 里唯一的 user.username；多用户响应（首页时间线等）
+  // 无法确定归属则回退到当前浏览的个人主页，仍不行就放弃采集
+  function jsonAttributionUsername(json) {
+    const found = new Set();
+    (function walk(obj, depth) {
+      if (!obj || typeof obj !== 'object' || depth > 10 || found.size > 3) return;
+      if (Array.isArray(obj)) { for (const o of obj) walk(o, depth + 1); return; }
+      const u = obj.user && obj.user.username;
+      if (typeof u === 'string' && /^[A-Za-z0-9._]{1,30}$/.test(u)) found.add(u);
+      for (const k in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, k)) walk(obj[k], depth + 1);
+      }
+    })(json, 0);
+    if (found.size === 1) return [...found][0];
+    return profileFromPath();
+  }
+
+  function harvestJsonMedia(jsonText) {
+    if (!JSON_LISTEN_ENABLED()) return 0;
+    let json;
+    try { json = JSON.parse(jsonText); } catch { return 0; }
+    const username = jsonAttributionUsername(json);
+    if (!username) return 0;
+    stripProfilePicFields(json);
+    const col = createMediaCollector(14, { includeDisplayUrl: true });
+    col.searchObj(json, 0);
+    if (!col.images.length && !col.videos.length) return 0;
+    if (!pendingByUser.has(username)) pendingByUser.set(username, new Map());
+    const pending = pendingByUser.get(username);
+    let added = 0;
+    for (const imgUrl of col.images) {
+      const key = fileKey(imgUrl);
+      if (!key || seenThisSession.has(key) || pending.has(key)) continue;
+      const vpfx = mediaIdPrefix(imgUrl);
+      if (vpfx && videoPrefixes.has(vpfx)) continue;
+      seenThisSession.add(key);
+      pending.set(key, { key, url: imgUrl, alt: fullResCandidates(imgUrl), type: 'image' });
+      added++;
+    }
+    for (const vid of col.videos) {
+      const key = fileKey(vid.url);
+      if (!key || seenThisSession.has(key) || pending.has(key)) continue;
+      seenThisSession.add(key);
+      pending.set(key, { key, url: vid.url, alt: [], type: 'video', poster: vid.poster });
+      added++;
+    }
+    return added;
   }
 
   function extractDirectVideoUrls(videoEl) {
@@ -717,6 +822,15 @@
                 } catch { }
               }).catch(() => { });
             }
+            if (isInstagramApiJsonUrl(u)) {
+              result.then(res => {
+                try {
+                  const ct = res.headers.get('content-type') || '';
+                  if (!ct.includes('json')) return;
+                  res.clone().text().then(t => { harvestJsonMedia(t); }).catch(() => { });
+                } catch { }
+              }).catch(() => { });
+            }
           } catch { }
           return result;
         };
@@ -737,6 +851,15 @@
                 const ct = xhr.getResponseHeader('content-type') || '';
                 if (ct.startsWith('video/') || ct.includes('octet-stream')) {
                   noteSegResponse(new URL(u, location.href).href, xhr.status, n => xhr.getResponseHeader(n), xhr.response);
+                }
+              }
+              if (isInstagramApiJsonUrl(u)) {
+                const ct = xhr.getResponseHeader('content-type') || '';
+                if (ct.includes('json')) {
+                  let text = null;
+                  if (xhr.responseType === 'json') { try { text = JSON.stringify(xhr.response); } catch { } }
+                  else if (xhr.responseType === '' || xhr.responseType === 'text') text = xhr.responseText;
+                  if (text) harvestJsonMedia(text);
                 }
               }
             } catch { }
