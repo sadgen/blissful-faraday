@@ -332,7 +332,6 @@ export default function SlideshowTile({
             const isOutgoing = index === outgoingIdx;
             if (!isActive && !isOutgoing) return null;
             const isVideo = videoFileNames.has(imgName);
-            const isOnlyVideo = isVideo && images.length === 1;
 
             return (
               <div
@@ -353,7 +352,6 @@ export default function SlideshowTile({
                       autoPlay
                       playsInline
                       preload="auto"
-                      loop={isOnlyVideo}
                       onEnded={() => advanceSlide(1)}
                       onLoadedMetadata={(e) => {
                         e.target.playbackRate = videoSpeed;

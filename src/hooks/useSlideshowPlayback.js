@@ -52,10 +52,12 @@ export default function useSlideshowPlayback({
     ? /\.(mp4|webm)$/i.test(images[activeIdx] || '')
     : false;
 
-  // If current slide is a video, don't auto-advance (video onended drives it)
-  // If it's a video and only one slide, allow loop playback
+  // If current slide is a video, don't auto-advance (video onended drives it,
+  // including the only video of a collection — playback end advances the tile)
+  // Single-image collections still auto-advance as long as another collection exists to rotate into
   const duration = globalSpeed / localSpeedMult;
-  const isPlaying = globalIsPlaying && localIsPlaying && !isWheelPaused && images.length > 1 && !isCurrentVideo;
+  const hasNextTarget = images.length > 1 || collections.length > 1;
+  const isPlaying = globalIsPlaying && localIsPlaying && !isWheelPaused && images.length > 0 && hasNextTarget && !isCurrentVideo;
 
   const resetProgressBar = useCallback(() => {
     setProgressBarReset(true);

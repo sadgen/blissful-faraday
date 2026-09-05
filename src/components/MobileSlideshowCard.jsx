@@ -340,7 +340,9 @@ export default function MobileSlideshowCard({
   };
 
   const duration = globalSpeed / localSpeedMult;
-  const isPlaying = globalIsPlaying && localIsPlaying && images.length > 1;
+  // Single-image collections still auto-advance as long as another collection exists to rotate into
+  const hasNextTarget = images.length > 1 || collections.length > 1;
+  const isPlaying = globalIsPlaying && localIsPlaying && images.length > 0 && hasNextTarget;
 
   const resetProgressBar = () => {
     setProgressBarReset(true);
@@ -1080,7 +1082,6 @@ export default function MobileSlideshowCard({
               const isOutgoing = index === outgoingIdx;
               if (!isActive && !isOutgoing) return null;
               const isVideo = videoFileNames.has(imgName);
-              const isOnlyVideo = isVideo && images.length === 1;
 
               return (
                 <div
@@ -1112,7 +1113,6 @@ export default function MobileSlideshowCard({
                       autoPlay
                       playsInline
                       preload="auto"
-                      loop={isOnlyVideo}
                       onEnded={() => advanceSlide(1)}
                       onLoadedMetadata={(e) => {
                         e.target.playbackRate = videoSpeed;
