@@ -3,7 +3,7 @@ import {
   Play, Pause, ChevronRight, ChevronLeft,
   Maximize2, Minimize2, Settings, Shuffle, HelpCircle, Trash2, Images
 } from 'lucide-react';
-import { isVideoFile } from '../utils/imageHelpers';
+import { isVideoFile, prettyCollectionName } from '../utils/imageHelpers';
 import useImagePreloader from '../hooks/useImagePreloader';
 import useSlideshowPlayback from '../hooks/useSlideshowPlayback';
 import useTileDrag from '../hooks/useTileDrag';
@@ -533,7 +533,7 @@ export default function SlideshowTile({
               </label>
               <select className="glass-select" value={currentCollName} onChange={handleCollectionChange} style={{ width: '100%', fontSize: '0.8rem' }}>
                 {collections.map(name => (
-                  <option key={name} value={name}>{name}</option>
+                  <option key={name} value={name}>{prettyCollectionName(name)}</option>
                 ))}
               </select>
             </div>

@@ -465,6 +465,28 @@ function removePostFiles(manifest, filenames) {
   return changed;
 }
 
+// ─── 帖子级虚拟图集（`username::postId`）──────────────────────────────────
+// 带 manifest 的 IG 账号在 /api/collections 里展开为一个个帖子条目，画廊的
+// 每个窗口播一个帖子；文件仍在账号目录平铺，复合名只在 API 层解析。
+// `username::__unsorted` 是特殊的未归属文件集合（旧批次或无 shortcode 的视频）。
+
+// 账号名字符集防线（与 harvest 路由的 username 校验一致）
+function isSafeAccountName(name) {
+  return typeof name === 'string' && name !== '.' && name !== '..' && /^[A-Za-z0-9._]{1,30}$/.test(name);
+}
+
+// 拆分复合图集名，非法返回 null
+function splitCompositeCollection(name) {
+  if (typeof name !== 'string') return null;
+  const i = name.indexOf('::');
+  if (i <= 0) return null;
+  const username = name.slice(0, i);
+  const postId = name.slice(i + 2);
+  if (!isSafeAccountName(username)) return null;
+  if (postId !== '__unsorted' && !/^[A-Za-z0-9_-]{1,64}$/.test(postId)) return null;
+  return [username, postId];
+}
+
 // ─── API middleware factory ───────────────────────────────────────────────
 
 export function createApiHandler() {
@@ -777,6 +799,59 @@ export function createApiHandler() {
       return;
     }
 
+    // ── GET /api/collection/images（帖子级虚拟图集 user::postId）─────────
+    // 复合名走独立路由：直接按 manifest 返回，不经磁盘扫描与列表缓存；
+    // 文件仍在 instagram-scraped/账号/ 下，名称合法性先经 splitCompositeCollection
+    if (url.pathname === '/api/collection/images'
+        && splitCompositeCollection(url.searchParams.get('collection') || '')) {
+      const collection = url.searchParams.get('collection');
+      try {
+        const [username, postId] = splitCompositeCollection(collection);
+        const igRoot = path.resolve(INSTAGRAM_SCRAPE_DIR);
+        const accountDir = path.resolve(path.join(igRoot, username));
+        if (!isPathWithin(accountDir, igRoot) || accountDir === igRoot) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Access Denied' }));
+          return;
+        }
+        const manifestPath = path.join(accountDir, '.posts.json');
+        let manifest = { version: 1, updatedAt: 0, posts: {} };
+        try {
+          if (fs.existsSync(manifestPath)) {
+            const d = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) manifest = d;
+          }
+        } catch {}
+        const exts = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.mp4', '.webm']);
+        let images = [];
+        if (postId === '__unsorted') {
+          const inPosts = new Set();
+          for (const p of Object.values(manifest.posts)) {
+            (Array.isArray(p.media) ? p.media : []).forEach(f => inPosts.add(f));
+          }
+          try {
+            images = fs.readdirSync(accountDir).filter(
+              f => !f.startsWith('.') && !inPosts.has(f) && exts.has(path.extname(f).toLowerCase())
+            );
+          } catch {}
+        } else {
+          const post = manifest.posts[postId];
+          images = post && Array.isArray(post.media)
+            ? post.media.filter(f => typeof f === 'string' && !f.startsWith('.')
+              && !f.includes('/') && !f.includes('\\')
+              && exts.has(path.extname(f).toLowerCase())
+              && fs.existsSync(path.join(accountDir, f)))
+            : [];
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'POSTS-MANIFEST' });
+        res.end(JSON.stringify({ name: collection, images }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
     // ── GET /api/collection/images?collection=xxx ────────────────────────
     if (url.pathname === '/api/collection/images') {
       const collection = url.searchParams.get('collection');
@@ -790,12 +865,19 @@ export function createApiHandler() {
       if (dirImages.has(collection)) {
         // 列表自校验：目录 mtime 与缓存基线不一致（harvest 新入库等）则重建
         let fresh = true;
+        let currentMtime = null;
         try {
-          const st = fs.statSync(path.join(activeResourcesDir, collection));
+          currentMtime = fs.statSync(path.join(activeResourcesDir, collection)).mtimeMs;
           const cachedMtime = (dirImagesMtimeCache.get(activeResourcesDir) || new Map()).get(collection);
-          if (cachedMtime !== undefined && st.mtimeMs !== cachedMtime) fresh = false;
+          if (cachedMtime !== undefined && currentMtime !== cachedMtime) fresh = false;
         } catch { fresh = false; }
         if (fresh) {
+          // 首次读取（重启后无基线）时补记当前 mtime 作为后续比对基线
+          if (currentMtime !== null) {
+            let mt = dirImagesMtimeCache.get(activeResourcesDir);
+            if (!mt) { mt = new Map(); dirImagesMtimeCache.set(activeResourcesDir, mt); }
+            if (!mt.has(collection)) mt.set(collection, currentMtime);
+          }
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'HIT-MEMORY' });
           res.end(JSON.stringify({ name: collection, images: dirImages.get(collection) }));
           return;
@@ -862,9 +944,22 @@ export function createApiHandler() {
       }
 
       try {
-        const requestedPath = path.join(activeResourcesDir, collection, name);
+        // 帖子级虚拟图集：文件实际存放在 instagram-scraped/账号/ 下
+        const comp = splitCompositeCollection(collection);
+        let baseDir = activeResourcesDir;
+        if (comp) {
+          const igRoot = path.resolve(INSTAGRAM_SCRAPE_DIR);
+          const accountDir = path.resolve(path.join(igRoot, comp[0]));
+          if (!isPathWithin(accountDir, igRoot) || accountDir === igRoot) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Access Denied' }));
+            return;
+          }
+          baseDir = accountDir;
+        }
+        const requestedPath = path.join(baseDir, comp ? '' : collection, name);
         const resolvedPath = path.resolve(requestedPath);
-        const resolvedBase = path.resolve(activeResourcesDir);
+        const resolvedBase = path.resolve(baseDir);
         if (!isPathWithin(resolvedPath, resolvedBase)) {
           res.writeHead(403, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Access Denied: Path is outside the resource folder.' }));
@@ -1006,14 +1101,17 @@ export function createApiHandler() {
         return;
       }
       try {
-        const infoPath = path.join(os.homedir(), 'Pictures', 'instagram-scraped', collection, '.collection-info.json');
+        // 帖子级虚拟图集：归属信息按 :: 前缀的账号取
+        const comp = splitCompositeCollection(collection);
+        const accountName = comp ? comp[0] : collection;
+        const infoPath = path.join(os.homedir(), 'Pictures', 'instagram-scraped', accountName, '.collection-info.json');
         if (fs.existsSync(infoPath)) {
           const infoData = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ username: infoData.username || collection, full_name: infoData.full_name || null }));
+          res.end(JSON.stringify({ username: infoData.username || accountName, full_name: infoData.full_name || null }));
         } else {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ username: collection, full_name: null }));
+          res.end(JSON.stringify({ username: accountName, full_name: null }));
         }
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -1033,7 +1131,9 @@ export function createApiHandler() {
         return;
       }
       try {
-        const resolvedPath = path.resolve(path.join(INSTAGRAM_SCRAPE_DIR, collection));
+        const comp = splitCompositeCollection(collection);
+        const accountName = comp ? comp[0] : collection;
+        const resolvedPath = path.resolve(path.join(INSTAGRAM_SCRAPE_DIR, accountName));
         const resolvedBase = path.resolve(INSTAGRAM_SCRAPE_DIR);
         if (!isPathWithin(resolvedPath, resolvedBase) || resolvedPath === resolvedBase) {
           res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -1048,8 +1148,127 @@ export function createApiHandler() {
             if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) manifest = d;
           }
         } catch {}
+        // 未归属集合没有帖子结构；帖子图集返回整账号帖子列表（编号按账号计）
+        const posts = (comp && comp[1] === '__unsorted')
+          ? []
+          : sortedPostsOf(manifest);
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ collection, posts: sortedPostsOf(manifest) }));
+        res.end(JSON.stringify({ collection, posts }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // ── POST /api/collection/delete（帖子级虚拟图集 user::postId）────────
+    // 复合名走独立路由：单文件删除 / 整帖删除（按 manifest.media 落盘）。
+    // 账号目录文件列表的一致性由图片列表缓存的目录 mtime 自校验兜底，
+    // 因此这里不触碰目录缓存子系统；账号目录被删空时整体移除。
+    if (url.pathname === '/api/collection/delete'
+        && splitCompositeCollection(url.searchParams.get('collection') || '')) {
+      const collection = url.searchParams.get('collection');
+      const filename = url.searchParams.get('name') || url.searchParams.get('file');
+      const postId = url.searchParams.get('post');
+      try {
+        const [username] = splitCompositeCollection(collection);
+        const igRoot = path.resolve(INSTAGRAM_SCRAPE_DIR);
+        const accountDir = path.resolve(path.join(igRoot, username));
+        if (!isPathWithin(accountDir, igRoot) || accountDir === igRoot) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Access Denied' }));
+          return;
+        }
+        const manifestPath = path.join(accountDir, '.posts.json');
+        // 与其他路由一致：manifest 的读改写内联完成，不经过任何闭包辅助
+        const exts = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.mp4', '.webm']);
+
+        if (filename) {
+          const resolvedFile = path.resolve(path.join(accountDir, filename));
+          if (!isPathWithin(resolvedFile, accountDir)) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Access Denied: File is outside the collection folder.' }));
+            return;
+          }
+          if (fs.existsSync(resolvedFile)) fs.unlinkSync(resolvedFile);
+          let manifest = { version: 1, updatedAt: 0, posts: {} };
+          try {
+            if (fs.existsSync(manifestPath)) {
+              const d = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+              if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) manifest = d;
+            }
+          } catch {}
+          if (removePostFiles(manifest, [filename])) {
+            try {
+              manifest.updatedAt = Date.now();
+              const mTmp = `${manifestPath}.${process.pid}x${Math.random().toString(36).slice(2, 8)}.tmp`;
+              fs.writeFileSync(mTmp, JSON.stringify(manifest, null, 2), 'utf8');
+              fs.renameSync(mTmp, manifestPath);
+            } catch {}
+          }
+          let remaining = [];
+          try {
+            remaining = fs.readdirSync(accountDir).filter(
+              f => !f.startsWith('.') && exts.has(path.extname(f).toLowerCase())
+            );
+          } catch {}
+          let folderDeleted = false;
+          if (!remaining.length) {
+            if (fs.existsSync(accountDir)) fs.rmSync(accountDir, { recursive: true, force: true });
+            folderDeleted = true;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, folderDeleted, remainingCount: remaining.length, deletedFile: filename }));
+          return;
+        }
+
+        if (postId) {
+          let manifest = { version: 1, updatedAt: 0, posts: {} };
+          try {
+            if (fs.existsSync(manifestPath)) {
+              const d = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+              if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) manifest = d;
+            }
+          } catch {}
+          const post = manifest.posts[postId];
+          if (!post || !Array.isArray(post.media) || post.media.length === 0) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '未找到该帖子的入库记录' }));
+            return;
+          }
+          let deletedCount = 0;
+          for (const f of post.media) {
+            if (typeof f !== 'string' || f.startsWith('.') || f.includes('/') || f.includes('\\')) continue;
+            const fp = path.resolve(path.join(accountDir, f));
+            if (!isPathWithin(fp, accountDir)) continue;
+            try { fs.unlinkSync(fp); deletedCount++; } catch {}
+          }
+          delete manifest.posts[postId];
+          try {
+            manifest.updatedAt = Date.now();
+            const mTmp = `${manifestPath}.${process.pid}x${Math.random().toString(36).slice(2, 8)}.tmp`;
+            fs.writeFileSync(mTmp, JSON.stringify(manifest, null, 2), 'utf8');
+            fs.renameSync(mTmp, manifestPath);
+          } catch {}
+          let remaining = [];
+          try {
+            remaining = fs.readdirSync(accountDir).filter(
+              f => !f.startsWith('.') && exts.has(path.extname(f).toLowerCase())
+            );
+          } catch {}
+          let folderDeleted = false;
+          if (!remaining.length) {
+            if (fs.existsSync(accountDir)) fs.rmSync(accountDir, { recursive: true, force: true });
+            folderDeleted = true;
+          }
+          console.log(`[Delete] 帖子删除 @${username}/${postId}: 文件 ${deletedCount}/${post.media.length}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, folderDeleted, remainingCount: remaining.length, deletedPost: postId, deletedCount }));
+          return;
+        }
+
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing parameter: name or post is required.' }));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));

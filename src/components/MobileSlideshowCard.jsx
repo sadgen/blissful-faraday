@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, X, ChevronRight, ChevronLeft, Maximize2, Minimize2, Settings, Trash2, Shuffle, Images } from 'lucide-react';
-import { isVideoFile, getImageDimensions } from '../utils/imageHelpers';
+import { isVideoFile, getImageDimensions, prettyCollectionName } from '../utils/imageHelpers';
 
 export default function MobileSlideshowCard({
   tileId,
@@ -953,7 +953,7 @@ export default function MobileSlideshowCard({
             }
           }}
         >
-          📁 {currentCollName}
+          📁 {prettyCollectionName(currentCollName)}
         </div>
 
         {/* ---- Overlay Controls (visible when showOverlay is true) ---- */}
@@ -977,7 +977,7 @@ export default function MobileSlideshowCard({
                 <span style={{ width: 5, height: 5, borderRadius: '50%', background: isPlaying ? '#10b981' : '#f59e0b', flexShrink: 0 }} />
                 <div style={{ minWidth: 0, lineHeight: 1.1 }}>
                   <div style={{ fontSize: '0.7rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#fff' }}>
-                    {currentCollName}
+                    {prettyCollectionName(currentCollName)}
                   </div>
                   {(() => {
                     const pinfo = postIndex && images[activeIdx] ? postIndex.get(images[activeIdx]) : null;
@@ -1067,7 +1067,7 @@ export default function MobileSlideshowCard({
                     style={{ width: '100%', fontSize: '0.75rem' }}
                   >
                     {collections.map(name => (
-                      <option key={name} value={name}>{name}</option>
+                      <option key={name} value={name}>{prettyCollectionName(name)}</option>
                     ))}
                   </select>
                 </div>

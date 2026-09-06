@@ -11,6 +11,14 @@ export function isVideoFile(filename) {
   return VIDEO_EXTENSIONS.some(ext => lower.endsWith(ext));
 }
 
+// 帖子级虚拟图集名（user::postId / user::__unsorted）的展示名
+export function prettyCollectionName(name) {
+  if (typeof name !== 'string' || !name.includes('::')) return name;
+  const [user, postId] = name.split('::');
+  if (postId === '__unsorted') return `@${user} · 未归类`;
+  return `@${user} · 帖 ${postId}`;
+}
+
 export function isImageFile(filename) {
   if (!filename) return false;
   const lower = filename.toLowerCase();

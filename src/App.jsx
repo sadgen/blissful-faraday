@@ -202,6 +202,35 @@ export default function App() {
     }
   }, []);
 
+  // Instagram 帖子级展开：带 .posts.json 的账号（仅 IG 账号名格式会去查询，
+  // 普通文件夹不会命中）展开为 `user::postId` 虚拟图集，未归属文件 >0 时
+  // 追加 `user::__unsorted`。无 manifest 的目录原样保留——普通文件夹的
+  // 展示与播放完全不受影响。
+  const expandInstagramPosts = async (collections) => {
+    const out = [];
+    await Promise.all(collections.map(async (c) => {
+      if (!c || !/^[A-Za-z0-9._]{1,30}$/.test(c.name || '')) { out.push(c); return; }
+      try {
+        const res = await fetch(`/api/collection/posts?collection=${encodeURIComponent(c.name)}`);
+        if (!res.ok) { out.push(c); return; }
+        const data = await res.json();
+        const posts = Array.isArray(data.posts) ? data.posts : [];
+        if (!posts.length) { out.push(c); return; }
+        for (const p of posts) {
+          out.push({ name: `${c.name}::${p.id}`, mtime: (p.ts || 0) * 1000 });
+        }
+        const ires = await fetch(`/api/collection/images?collection=${encodeURIComponent(c.name)}`);
+        if (ires.ok) {
+          const idata = await ires.json();
+          const inPosts = new Set(posts.flatMap(p => p.media || []));
+          const leftovers = (idata.images || []).filter(f => !inPosts.has(f));
+          if (leftovers.length) out.push({ name: `${c.name}::__unsorted`, mtime: c.mtime });
+        }
+      } catch { out.push(c); }
+    }));
+    return out;
+  };
+
   // Fetch collections from API
   const fetchCollections = async () => {
     try {
@@ -211,10 +240,10 @@ export default function App() {
       }
       setFetchError('');
       const data = await safeFetchJSON('/api/collections');
-      
-      const nextCollections = data.collections || [];
+
       const nextScanDirectory = data.scanDirectory || '';
-      
+      const nextCollections = await expandInstagramPosts(data.collections || []);
+
       setRawCollections(nextCollections);
       setScanDirectory(nextScanDirectory);
       setInputScanDir(nextScanDirectory);
