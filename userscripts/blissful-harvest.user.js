@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.3.0
+// @version      1.3.1
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。多图贴文秒级全量提取 + 个人主页旁听接口 JSON 全量采集多图 + 帖子结构（shortcode/时间/caption）随媒体回传 + 网页端多图横向并排免点击预览。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -456,21 +456,24 @@
     return obj;
   }
 
-  // 归属用户名：优先取 JSON 里唯一的 user.username；多用户响应（首页时间线等）
-  // 无法确定归属则回退到当前浏览的个人主页，仍不行就放弃采集
+  // 归属用户名：唯一 user.username / owner.username → 该用户；响应里完全无
+  // 用户名（纯 owner.id 的主页内容响应）→ 回退当前浏览的主页；含多个用户名
+  // （推荐流/时间线混排）→ 放弃采集。多用户回退会把别人的帖子错存进当前
+  // 浏览的账号（2026-09-06 实测 zhizhibooty/cindy 目录混入他人媒体，已收紧）
   function jsonAttributionUsername(json) {
     const found = new Set();
     (function walk(obj, depth) {
       if (!obj || typeof obj !== 'object' || depth > 10 || found.size > 3) return;
       if (Array.isArray(obj)) { for (const o of obj) walk(o, depth + 1); return; }
-      const u = obj.user && obj.user.username;
+      const u = (obj.user && obj.user.username) || (obj.owner && obj.owner.username);
       if (typeof u === 'string' && /^[A-Za-z0-9._]{1,30}$/.test(u)) found.add(u);
       for (const k in obj) {
         if (Object.prototype.hasOwnProperty.call(obj, k)) walk(obj[k], depth + 1);
       }
     })(json, 0);
     if (found.size === 1) return [...found][0];
-    return profileFromPath();
+    if (found.size === 0) return profileFromPath();
+    return null;
   }
 
   function harvestJsonMedia(jsonText) {

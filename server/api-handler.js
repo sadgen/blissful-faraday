@@ -55,6 +55,9 @@ let activeResourcesDir = loadScanDir() || path.resolve(projectRoot, 'resources')
 const dirCollectionsCache = new Map();   // dir -> collection[]
 const dirMtimeCache       = new Map();   // dir -> mtimeMs
 const dirImagesCache      = new Map();   // dir -> Map(collection -> images[])
+// 每个图集列表缓存时的目录 mtime 基线：读取时比对，目录内容变了即重建，
+// 避免 harvest 新入库后播放端长期看不到新文件
+const dirImagesMtimeCache = new Map();   // dir -> Map(collection -> mtimeMs)
 
 function getCacheFilePath(dir) {
   return path.join(dir, '.collection-cache.json');
@@ -67,7 +70,13 @@ function loadPersistentCache(dir) {
       const cacheData = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
       if (cacheData.collections) dirCollectionsCache.set(dir, cacheData.collections);
       if (cacheData.collectionImages) {
-        dirImagesCache.set(dir, new Map(Object.entries(cacheData.collectionImages)));
+        const imgs = new Map(Object.entries(cacheData.collectionImages));
+        const m = new Map();
+        for (const coll of imgs.keys()) {
+          try { m.set(coll, fs.statSync(path.join(dir, coll)).mtimeMs); } catch { m.set(coll, Date.now()); }
+        }
+        dirImagesCache.set(dir, imgs);
+        dirImagesMtimeCache.set(dir, m);
       }
       if (cacheData.dirMtime) dirMtimeCache.set(dir, cacheData.dirMtime);
       console.log(`[Cache] Loaded persistent cache from ${cachePath}`);
@@ -717,6 +726,8 @@ export function createApiHandler() {
           dirCollectionsCache.delete(activeResourcesDir);
           dirMtimeCache.delete(activeResourcesDir);
           dirImagesCache.delete(activeResourcesDir);
+        dirImagesMtimeCache.delete(activeResourcesDir);
+          dirImagesMtimeCache.delete(activeResourcesDir);
           clearPersistentCache(activeResourcesDir);
         }
 
@@ -777,9 +788,21 @@ export function createApiHandler() {
 
       const dirImages = dirImagesCache.get(activeResourcesDir) || new Map();
       if (dirImages.has(collection)) {
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'HIT-MEMORY' });
-        res.end(JSON.stringify({ name: collection, images: dirImages.get(collection) }));
-        return;
+        // 列表自校验：目录 mtime 与缓存基线不一致（harvest 新入库等）则重建
+        let fresh = true;
+        try {
+          const st = fs.statSync(path.join(activeResourcesDir, collection));
+          const cachedMtime = (dirImagesMtimeCache.get(activeResourcesDir) || new Map()).get(collection);
+          if (cachedMtime !== undefined && st.mtimeMs !== cachedMtime) fresh = false;
+        } catch { fresh = false; }
+        if (fresh) {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'HIT-MEMORY' });
+          res.end(JSON.stringify({ name: collection, images: dirImages.get(collection) }));
+          return;
+        }
+        dirImages.delete(collection);
+        const mtimes = dirImagesMtimeCache.get(activeResourcesDir);
+        if (mtimes) mtimes.delete(collection);
       }
 
       try {
@@ -811,6 +834,10 @@ export function createApiHandler() {
         }
 
         dirImages.set(collection, images);
+        let dmt = dirImagesMtimeCache.get(activeResourcesDir);
+        if (!dmt) { dmt = new Map(); dirImagesMtimeCache.set(activeResourcesDir, dmt); }
+        try { dmt.set(collection, fs.statSync(resolvedPath).mtimeMs); }
+        catch { dmt.set(collection, Date.now()); }
         dirImagesCache.set(activeResourcesDir, dirImages);
         const dirColl = dirCollectionsCache.get(activeResourcesDir);
         savePersistentCache(activeResourcesDir, dirColl, dirImages);
@@ -1102,6 +1129,9 @@ export function createApiHandler() {
             dirCollectionsCache.delete(activeResourcesDir);
             dirMtimeCache.delete(activeResourcesDir);
             dirImagesCache.delete(activeResourcesDir);
+        dirImagesMtimeCache.delete(activeResourcesDir);
+            dirImagesMtimeCache.delete(activeResourcesDir);
+          dirImagesMtimeCache.delete(activeResourcesDir);
             clearPersistentCache(activeResourcesDir);
           } else {
             const dirImages = dirImagesCache.get(activeResourcesDir);
@@ -1170,6 +1200,9 @@ export function createApiHandler() {
             dirCollectionsCache.delete(activeResourcesDir);
             dirMtimeCache.delete(activeResourcesDir);
             dirImagesCache.delete(activeResourcesDir);
+        dirImagesMtimeCache.delete(activeResourcesDir);
+            dirImagesMtimeCache.delete(activeResourcesDir);
+          dirImagesMtimeCache.delete(activeResourcesDir);
             clearPersistentCache(activeResourcesDir);
           } else {
             const dirImages = dirImagesCache.get(activeResourcesDir);
@@ -1199,6 +1232,8 @@ export function createApiHandler() {
           dirCollectionsCache.delete(activeResourcesDir);
           dirMtimeCache.delete(activeResourcesDir);
           dirImagesCache.delete(activeResourcesDir);
+        dirImagesMtimeCache.delete(activeResourcesDir);
+          dirImagesMtimeCache.delete(activeResourcesDir);
           clearPersistentCache(activeResourcesDir);
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1468,6 +1503,7 @@ export function createApiHandler() {
         dirCollectionsCache.delete(activeResourcesDir);
         dirMtimeCache.delete(activeResourcesDir);
         dirImagesCache.delete(activeResourcesDir);
+        dirImagesMtimeCache.delete(activeResourcesDir);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, message: 'Cache cleared successfully', scanDirectory: activeResourcesDir }));
       } catch (err) {
@@ -1485,4 +1521,4 @@ export function createApiHandler() {
 // Export helpers so server/index.js can access them
 // Re-export the active directory as a getter so it stays live
 export function getActiveDir() { return activeResourcesDir; }
-export { clearPersistentCache, dirCollectionsCache, dirMtimeCache, dirImagesCache };
+export { clearPersistentCache, dirCollectionsCache, dirMtimeCache, dirImagesCache, dirImagesMtimeCache };
