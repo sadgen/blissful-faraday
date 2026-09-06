@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Play, Pause, ChevronRight, ChevronLeft,
-  Maximize2, Minimize2, Settings, Shuffle, HelpCircle, Trash2
+  Maximize2, Minimize2, Settings, Shuffle, HelpCircle, Trash2, Images
 } from 'lucide-react';
 import { isVideoFile } from '../utils/imageHelpers';
 import useImagePreloader from '../hooks/useImagePreloader';
@@ -253,6 +253,60 @@ export default function SlideshowTile({
 
   // 当前媒体的帖子信息（IG 账号图集才有）：第 x/y 帖 + caption
   const activePostInfo = postIndex && images[activeIdx] ? postIndex.get(images[activeIdx]) : null;
+  // 当前帖子在播放队列里的文件数（用于删帖按钮的提示文案）
+  const activePostFileCount = activePostInfo
+    ? images.filter(f => postIndex.get(f)?.postId === activePostInfo.postId).length
+    : 0;
+
+  // 删除整个帖子：按帖子索引找出该帖全部文件，一次提交撤销任务（10 秒后按 postId 整帖落盘删除）
+  const handleDeletePost = (e) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (!activePostInfo || !postIndex) return;
+    const postFiles = images.filter(f => postIndex.get(f)?.postId === activePostInfo.postId);
+    if (!postFiles.length) return;
+    const snapshot = images.slice();
+    const coll = currentCollName;
+    const isWholeColl = postFiles.length >= images.length;
+
+    if (isWholeColl) {
+      skipToNextCollection(1);
+    } else {
+      postFiles.forEach(f => removeImage(f));
+      const firstIdx = images.indexOf(postFiles[0]);
+      setActiveIdx(Math.max(0, Math.min(firstIdx, images.length - postFiles.length - 1)));
+      setOutgoingIdx(null);
+    }
+
+    if (onQueueDelete) {
+      onQueueDelete({
+        collection: coll,
+        postId: activePostInfo.postId,
+        names: postFiles,
+        isVideo: false,
+        isLastMedia: isWholeColl,
+        onUndo: () => {
+          if (isWholeColl) {
+            setCurrentCollName(coll);
+            if (onCollectionChange) onCollectionChange(tileId, coll);
+            return;
+          }
+          if (currentCollNameRef.current !== coll) return;
+          // 按原顺序把帖子文件插回播放队列
+          setImages(prev => {
+            const merged = prev.filter(f => !postFiles.includes(f));
+            postFiles.forEach(f => {
+              const origIdx = snapshot.indexOf(f);
+              merged.splice(Math.min(origIdx, merged.length), 0, f);
+            });
+            return merged;
+          });
+        }
+      });
+    }
+  };
 
   // --- Empty state ---
   if (collections.length === 0) {
@@ -427,6 +481,19 @@ export default function SlideshowTile({
             <span style={{ opacity: 0.6, fontSize: '0.75rem', flexShrink: 0 }}>({activeIdx + 1}/{images.length})</span>
           </div>
           <div className="tile-controls-group">
+            {!isMaximized && activePostInfo && (
+              <button
+                type="button"
+                className="tile-mini-btn"
+                onClick={handleDeletePost}
+                onMouseDown={(e) => e.stopPropagation()}
+                disabled={images.length === 0}
+                title={`删除整个帖子（第 ${activePostInfo.postNo}/${activePostInfo.totalPosts} 帖，共 ${activePostFileCount} 个文件）`}
+                style={{ color: '#ef4444' }}
+              >
+                <Images size={14} />
+              </button>
+            )}
             {!isMaximized && (
               <button
                 type="button"

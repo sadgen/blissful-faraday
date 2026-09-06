@@ -1121,6 +1121,76 @@ export function createApiHandler() {
             remainingCount: remainingFiles.length,
             deletedFile: filename
           }));
+        } else if (url.searchParams.get('post')) {
+          // 删除整个帖子：按 manifest 里该帖的 media 清单删文件，再清掉帖子条目。
+          // 仅对 IG 账号目录有意义（manifest 在账号目录下）；删完目录空则连目录一起删。
+          const postId = url.searchParams.get('post');
+          const manifestPath = path.join(resolvedPath, '.posts.json');
+          let manifest = { version: 1, updatedAt: 0, posts: {} };
+          try {
+            if (fs.existsSync(manifestPath)) {
+              const d = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+              if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) manifest = d;
+            }
+          } catch {}
+          const post = manifest.posts[postId];
+          if (!post || !Array.isArray(post.media) || post.media.length === 0) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '未找到该帖子的入库记录' }));
+            return;
+          }
+          let deletedCount = 0;
+          for (const f of post.media) {
+            if (typeof f !== 'string' || f.startsWith('.') || f.includes('/') || f.includes('\\')) continue;
+            const fp = path.resolve(path.join(resolvedPath, f));
+            if (!isPathWithin(fp, resolvedPath)) continue;
+            try { fs.unlinkSync(fp); deletedCount++; } catch {}
+          }
+          delete manifest.posts[postId];
+          try {
+            manifest.updatedAt = Date.now();
+            const mTmp = `${manifestPath}.${process.pid}x${Math.random().toString(36).slice(2, 8)}.tmp`;
+            fs.writeFileSync(mTmp, JSON.stringify(manifest, null, 2), 'utf8');
+            fs.renameSync(mTmp, manifestPath);
+          } catch {}
+
+          let remainingFiles = [];
+          if (fs.existsSync(resolvedPath)) {
+            remainingFiles = fs.readdirSync(resolvedPath).filter(
+              f => !f.startsWith('.') && imageExtensions.has(path.extname(f).toLowerCase())
+            );
+          }
+
+          let folderDeleted = false;
+          if (remainingFiles.length === 0) {
+            if (fs.existsSync(resolvedPath)) {
+              fs.rmSync(resolvedPath, { recursive: true, force: true });
+            }
+            folderDeleted = true;
+            dirCollectionsCache.delete(activeResourcesDir);
+            dirMtimeCache.delete(activeResourcesDir);
+            dirImagesCache.delete(activeResourcesDir);
+            clearPersistentCache(activeResourcesDir);
+          } else {
+            const dirImages = dirImagesCache.get(activeResourcesDir);
+            if (dirImages && dirImages.has(collection)) {
+              dirImages.set(collection, remainingFiles);
+            }
+            const dirColl = dirCollectionsCache.get(activeResourcesDir);
+            if (dirColl && dirImages) {
+              savePersistentCache(activeResourcesDir, dirColl, dirImages);
+            }
+          }
+
+          console.log(`[Delete] 帖子删除 @${collection}/${postId}: 文件 ${deletedCount}/${post.media.length}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            folderDeleted,
+            remainingCount: remainingFiles.length,
+            deletedPost: postId,
+            deletedCount
+          }));
         } else {
           if (fs.existsSync(resolvedPath)) {
             fs.rmSync(resolvedPath, { recursive: true, force: true });

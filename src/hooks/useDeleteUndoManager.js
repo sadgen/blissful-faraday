@@ -1,5 +1,13 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 
+// 按条目类型拼删除 URL：postId → 整帖删除，否则单文件删除
+function deleteUrlFor(item) {
+  const qs = item.postId
+    ? `post=${encodeURIComponent(item.postId)}`
+    : `name=${encodeURIComponent(item.name)}`;
+  return `/api/collection/delete?collection=${encodeURIComponent(item.collection)}&${qs}`;
+}
+
 export default function useDeleteUndoManager(fetchCollections) {
   const [toasts, setToasts] = useState([]);
   const pendingMapRef = useRef(new Map());
@@ -8,8 +16,8 @@ export default function useDeleteUndoManager(fetchCollections) {
   useEffect(() => {
     const handleBeforeUnload = () => {
       pendingMapRef.current.forEach(({ item }) => {
-        if (item.collection && item.name) {
-          const url = `/api/collection/delete?collection=${encodeURIComponent(item.collection)}&name=${encodeURIComponent(item.name)}`;
+        if (item.collection && (item.postId || item.name)) {
+          const url = deleteUrlFor(item);
           if (navigator.sendBeacon) {
             navigator.sendBeacon(url);
           } else {
@@ -39,10 +47,7 @@ export default function useDeleteUndoManager(fetchCollections) {
 
     const { item } = entry;
     try {
-      const res = await fetch(
-        `/api/collection/delete?collection=${encodeURIComponent(item.collection)}&name=${encodeURIComponent(item.name)}`,
-        { method: 'POST' }
-      );
+      const res = await fetch(deleteUrlFor(item), { method: 'POST' });
       const data = await res.json();
       if (data.folderDeleted && fetchCollections) {
         await fetchCollections();
@@ -65,7 +70,7 @@ export default function useDeleteUndoManager(fetchCollections) {
     }
   }, []);
 
-  const queueDelete = useCallback(({ collection, name, isVideo, isLastMedia, onUndo }) => {
+  const queueDelete = useCallback(({ collection, name, names, postId, isVideo, isLastMedia, onUndo }) => {
     const id = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const duration = 10000;
     let timeLeft = 10;
@@ -79,15 +84,21 @@ export default function useDeleteUndoManager(fetchCollections) {
       commitDelete(id);
     }, duration);
 
+    // postId 条目（整帖删除）没有单一文件名，toast 显示批量摘要
+    const displayName = postId
+      ? `帖子（${(names || []).length} 个文件）`
+      : name;
     const item = {
       id,
       collection,
-      name,
-      mediaType: isVideo ? '视频' : '图片',
+      name: displayName,
+      names,
+      postId,
+      mediaType: postId ? '帖子' : (isVideo ? '视频' : '图片'),
       isLastMedia,
       onUndo,
       onCommit: () => {
-        fetch(`/api/collection/delete?collection=${encodeURIComponent(collection)}&name=${encodeURIComponent(name)}`, { method: 'POST' })
+        fetch(deleteUrlFor({ collection, name, postId }), { method: 'POST' })
           .then(r => r.json())
           .then(d => { if (d.folderDeleted && fetchCollections) fetchCollections(); })
           .catch(e => console.error(e));
@@ -98,8 +109,8 @@ export default function useDeleteUndoManager(fetchCollections) {
 
     const newToast = {
       id,
-      name,
-      mediaType: isVideo ? '视频' : '图片',
+      name: displayName,
+      mediaType: item.mediaType,
       isLastMedia,
       timeLeft: 10,
       duration,

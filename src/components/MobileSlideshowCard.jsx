@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Pause, X, ChevronRight, ChevronLeft, Maximize2, Minimize2, Settings, Trash2, Shuffle } from 'lucide-react';
+import { Play, Pause, X, ChevronRight, ChevronLeft, Maximize2, Minimize2, Settings, Trash2, Shuffle, Images } from 'lucide-react';
 import { isVideoFile, getImageDimensions } from '../utils/imageHelpers';
 
 export default function MobileSlideshowCard({
@@ -228,7 +228,7 @@ export default function MobileSlideshowCard({
                 p.media.forEach(f => {
                   if (!remaining.has(f)) return;
                   remaining.delete(f);
-                  pMap.set(f, { postNo: pi + 1, totalPosts: posts.length, caption: p.caption || '' });
+                  pMap.set(f, { postNo: pi + 1, totalPosts: posts.length, caption: p.caption || '', postId: p.id });
                   ordered.push(f);
                 });
               });
@@ -669,6 +669,59 @@ export default function MobileSlideshowCard({
     }
   }, [currentCollName, images, activeIdx, videoFileNames, skipToNextCollection, resetProgressBar, onQueueDelete, onCollectionChange, tileId]);
 
+  // 删除整个帖子：按帖子索引找出该帖全部文件，一次提交撤销任务（10 秒后按 postId 整帖落盘删除）
+  const handleDeletePost = (e) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    const pinfo = postIndex && images[activeIdx] ? postIndex.get(images[activeIdx]) : null;
+    if (!pinfo) return;
+    const postFiles = images.filter(f => postIndex.get(f)?.postId === pinfo.postId);
+    if (!postFiles.length) return;
+    const snapshot = images.slice();
+    const coll = currentCollName;
+    const isWholeColl = postFiles.length >= images.length;
+
+    if (isWholeColl) {
+      skipToNextCollection(1);
+    } else {
+      postFiles.forEach(f => preloadCacheRef.current.delete(`${coll}:${f}`));
+      setImages(prev => prev.filter(img => !postFiles.includes(img)));
+      const firstIdx = images.indexOf(postFiles[0]);
+      setActiveIdx(Math.max(0, Math.min(firstIdx, images.length - postFiles.length - 1)));
+      setOutgoingIdx(null);
+      resetProgressBar();
+    }
+
+    if (onQueueDelete) {
+      onQueueDelete({
+        collection: coll,
+        postId: pinfo.postId,
+        names: postFiles,
+        isVideo: false,
+        isLastMedia: isWholeColl,
+        onUndo: () => {
+          if (isWholeColl) {
+            setCurrentCollName(coll);
+            if (onCollectionChange) onCollectionChange(tileId, coll);
+            return;
+          }
+          if (currentCollNameRef.current !== coll) return;
+          setImages(prev => {
+            const merged = prev.filter(f => !postFiles.includes(f));
+            postFiles.forEach(f => {
+              const origIdx = snapshot.indexOf(f);
+              merged.splice(Math.min(origIdx, merged.length), 0, f);
+            });
+            return merged;
+          });
+          resetProgressBar();
+        }
+      });
+    }
+  };
+
   // TOUCH GESTURE HANDLERS
   const handleTouchStart = (e) => {
     if (e.touches.length !== 1) return;
@@ -942,6 +995,25 @@ export default function MobileSlideshowCard({
               <span style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.6)', marginRight: 4, flexShrink: 0 }}>
                 {activeIdx + 1}/{images.length}
               </span>
+              {(() => {
+                const pinfo = postIndex && images[activeIdx] ? postIndex.get(images[activeIdx]) : null;
+                if (!pinfo) return null;
+                const n = images.filter(f => postIndex.get(f)?.postId === pinfo.postId).length;
+                return (
+                  <button
+                    type="button"
+                    className="tile-mini-btn"
+                    onClick={handleDeletePost}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    disabled={images.length === 0}
+                    title={`删除整个帖子（第 ${pinfo.postNo}/${pinfo.totalPosts} 帖，共 ${n} 个文件）`}
+                    style={{ color: '#ef4444', flexShrink: 0 }}
+                  >
+                    <Images size={13} />
+                  </button>
+                );
+              })()}
               <button
                 type="button"
                 className="tile-mini-btn"

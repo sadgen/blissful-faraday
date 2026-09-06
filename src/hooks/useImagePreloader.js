@@ -188,7 +188,7 @@ export default function useImagePreloader({
                 p.media.forEach(f => {
                   if (!remaining.has(f)) return;
                   remaining.delete(f);
-                  pMap.set(f, { postNo: pi + 1, totalPosts: posts.length, caption: p.caption || '' });
+                  pMap.set(f, { postNo: pi + 1, totalPosts: posts.length, caption: p.caption || '', postId: p.id });
                   ordered.push(f);
                 });
               });
