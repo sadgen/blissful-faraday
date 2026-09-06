@@ -362,7 +362,11 @@ async function harvestDownload(urlString, targetDir, base) {
     },
     redirect: 'follow',
   });
-  if (!res.ok || !res.body) return false;
+  if (!res.ok || !res.body) {
+    try { res.body?.cancel?.(); } catch {}
+    try { fs.unlinkSync(tmpPath); } catch {}
+    return null;
+  }
   const out = fs.createWriteStream(tmpPath);
   try {
     let size = 0;
@@ -378,7 +382,7 @@ async function harvestDownload(urlString, targetDir, base) {
     throw err;
   }
   await new Promise(resolve => out.end(resolve));
-  return true;
+  return tmpPath;
 }
 
 // ─── 帖子结构 manifest（账号目录下 .posts.json）───────────────────────────
@@ -1189,14 +1193,14 @@ export function createApiHandler() {
               }
 
               // 临时文件由 harvestDownload 内部按请求加唯一后缀：脚本重试等场景下
-              // 可能出现同一条媒体的并发下载，共享同名 .part 会互相截断，
-              // 甚至让另一路 rename 时 ENOENT；失败时函数自行清理临时文件
-              let ok = false;
+              // 可能出现同一条媒体的并发下载，共享同名 .part 会互相截断；
+              // 失败时函数自行清理，成功返回实际落盘的临时路径
+              let tmpPath = null;
               for (const candidate of candidates) {
-                try { ok = await harvestDownload(candidate, targetDir, base); } catch { ok = false; }
-                if (ok) break;
+                try { tmpPath = await harvestDownload(candidate, targetDir, base); } catch { tmpPath = null; }
+                if (tmpPath) break;
               }
-              if (!ok) {
+              if (!tmpPath) {
                 console.warn(`[Harvest] 下载失败 @${username}: ${base} ← ${candidates[0]}`);
                 failed++;
                 failedUrls.push(item.url);
