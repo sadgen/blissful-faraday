@@ -176,25 +176,24 @@ export default function useImagePreloader({
           const pres = await fetch(`/api/collection/posts?collection=${encodeURIComponent(currentCollName)}`, { signal: controller.signal });
           if (pres.ok) {
             const pdata = await pres.json();
-            const fileList = new Set(newImages);
-            const posts = (Array.isArray(pdata.posts) ? pdata.posts : [])
-              .map(p => ({ ...p, media: (Array.isArray(p.media) ? p.media : []).filter(f => fileList.has(f)) }))
-              .filter(p => p.media.length > 0);
+            // 帖子图集（user::postId）只含本帖文件，但编号按整账号计（第 x/y 帖）
+            const posts = Array.isArray(pdata.posts) ? pdata.posts : [];
             if (posts.length) {
-              const remaining = new Set(newImages);
+              const present = new Set(newImages);
               const ordered = [];
               const pMap = new Map();
               posts.forEach((p, pi) => {
-                p.media.forEach(f => {
-                  if (!remaining.has(f)) return;
-                  remaining.delete(f);
+                (Array.isArray(p.media) ? p.media : []).forEach(f => {
+                  if (!present.has(f) || pMap.has(f)) return;
                   pMap.set(f, { postNo: pi + 1, totalPosts: posts.length, caption: p.caption || '', postId: p.id });
                   ordered.push(f);
                 });
               });
-              newImages.forEach(f => { if (remaining.has(f)) ordered.push(f); });
-              newImages = ordered;
-              setPostIndex(pMap);
+              if (pMap.size) {
+                newImages.forEach(f => { if (!pMap.has(f)) ordered.push(f); });
+                newImages = ordered;
+                setPostIndex(pMap);
+              }
             }
           }
         } catch (e) {
