@@ -348,8 +348,13 @@ function removeVideoPosters(dir, prefixes) {
   } catch { return 0; }
 }
 
-// 下载到 tmpPath（隐藏文件 + .part 后缀，画廊扫描会跳过点文件，半成品不会出现在图集里）
-async function harvestDownload(urlString, tmpPath) {
+// 下载到 tmpPath（隐藏文件 + .part 后缀，画廊扫描会跳过点文件，半成品不会出现在图集里）。
+// tmpPath 由函数内部拼装并校验，调用方只传目标目录与已消毒的文件名。
+async function harvestDownload(urlString, targetDir, base) {
+  const tmpPath = path.join(targetDir, `.${base}.${process.pid}x${Math.random().toString(36).slice(2, 8)}.part`);
+  if (!isPathWithin(path.resolve(tmpPath), path.resolve(targetDir))) {
+    throw new Error('非法下载路径');
+  }
   const res = await fetch(urlString, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
@@ -374,6 +379,77 @@ async function harvestDownload(urlString, tmpPath) {
   }
   await new Promise(resolve => out.end(resolve));
   return true;
+}
+
+// ─── 帖子结构 manifest（账号目录下 .posts.json）───────────────────────────
+// 油猴脚本回传媒体时附带所属帖子（shortcode/发帖时间/caption）。服务端把
+// 「哪个文件属于哪个帖子」记进 manifest，画廊据此按 帖子时间倒序 + 帖内
+// carousel 顺序 放映，复刻刷主页的流程。媒体文件本身仍平铺入库，manifest
+// 只是索引，文件被删时同步清理条目。
+// 注意：manifest 的读/写 fs 一律在路由内联完成（username 已在路由入口按
+// ^[A-Za-z0-9._]{1,30}$ 校验，等价于既有 targetDir 的构造方式）；本节只放
+// 纯数据变换函数，不触碰文件系统。
+
+// 只接受可信形状：id 为 IG shortcode 字符集，时间戳为合理秒级 Unix 时间
+function sanitizePostMeta(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return null;
+  let ts = null;
+  if (Number.isFinite(raw.ts) && raw.ts > 0 && raw.ts < 4102444800) ts = Math.floor(raw.ts);
+  let caption = null;
+  if (typeof raw.caption === 'string' && raw.caption.trim()) caption = raw.caption.trim().slice(0, 500);
+  return { id, ts, caption };
+}
+
+// 把 [{ post, filename }] 归并进 manifest 对象（原地修改），返回是否有变化。
+// post 缺失（旧脚本或 DOM 兜底拿不到 shortcode）只跳过不报错。
+function mergePostEntries(manifest, entries) {
+  let changed = false;
+  for (const e of (entries || [])) {
+    const post = sanitizePostMeta(e && e.post);
+    const filename = e && typeof e.filename === 'string' ? e.filename : null;
+    if (!post || !filename) continue;
+    let p = manifest.posts[post.id];
+    if (!p) {
+      manifest.posts[post.id] = { id: post.id, ts: post.ts, caption: post.caption, media: [filename] };
+      changed = true;
+      continue;
+    }
+    if (!p.ts && post.ts) { p.ts = post.ts; changed = true; }
+    if (!p.caption && post.caption) { p.caption = post.caption; changed = true; }
+    if (!Array.isArray(p.media)) p.media = [];
+    if (!p.media.includes(filename)) { p.media.push(filename); changed = true; }
+  }
+  return changed;
+}
+
+// 纯函数：manifest.posts → 按发帖时间倒序的帖子数组（帖内 media 为入库文件名）
+function sortedPostsOf(manifest) {
+  return Object.values((manifest && manifest.posts) || {})
+    .map(p => ({
+      id: p.id,
+      ts: p.ts || null,
+      caption: p.caption || null,
+      media: Array.isArray(p.media) ? p.media : [],
+    }))
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+}
+
+// 纯函数：从 manifest 中剔除一组文件名；帖子媒体清空后条目一并移除。
+// 返回是否被修改（调用方据此决定是否回写文件）。
+function removePostFiles(manifest, filenames) {
+  const set = new Set(filenames.filter(Boolean));
+  if (!set.size) return false;
+  let changed = false;
+  for (const id of Object.keys(manifest.posts)) {
+    const post = manifest.posts[id];
+    if (!Array.isArray(post.media)) continue;
+    const next = post.media.filter(f => !set.has(f));
+    if (next.length !== post.media.length) { post.media = next; changed = true; }
+    if (!post.media.length) { delete manifest.posts[id]; changed = true; }
+  }
+  return changed;
 }
 
 // ─── API middleware factory ───────────────────────────────────────────────
@@ -915,6 +991,41 @@ export function createApiHandler() {
       return;
     }
 
+    // ── GET /api/collection/posts?collection=xxx ─────────────────────────
+    // IG 账号的帖子结构 manifest：按发帖时间倒序，media 为帖内入库文件名
+    // （carousel 顺序）。无 manifest（普通图集）返回空数组，前端维持原排序。
+    if (url.pathname === '/api/collection/posts') {
+      const collection = url.searchParams.get('collection');
+      if (!collection) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing parameter: collection is required.' }));
+        return;
+      }
+      try {
+        const resolvedPath = path.resolve(path.join(INSTAGRAM_SCRAPE_DIR, collection));
+        const resolvedBase = path.resolve(INSTAGRAM_SCRAPE_DIR);
+        if (!isPathWithin(resolvedPath, resolvedBase) || resolvedPath === resolvedBase) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Access Denied' }));
+          return;
+        }
+        const manifestPath = path.join(resolvedPath, '.posts.json');
+        let manifest = { version: 1, updatedAt: 0, posts: {} };
+        try {
+          if (fs.existsSync(manifestPath)) {
+            const d = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) manifest = d;
+          }
+        } catch {}
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ collection, posts: sortedPostsOf(manifest) }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
     // ── POST /api/collection/delete?collection=xxx[&name=yyy] ────────────
     if (url.pathname === '/api/collection/delete' && req.method === 'POST') {
       const collection = url.searchParams.get('collection');
@@ -948,6 +1059,28 @@ export function createApiHandler() {
           if (fs.existsSync(resolvedFilePath)) {
             fs.unlinkSync(resolvedFilePath);
           }
+          // 若删除的是 IG 账号里的文件，同步清出帖子 manifest，保持索引与磁盘一致。
+          // manifest 与被删文件同目录（该目录已过 isPathWithin 校验）。
+          try {
+            if (path.resolve(path.join(INSTAGRAM_SCRAPE_DIR, collection)) === resolvedPath) {
+              const manifestPath = path.join(resolvedPath, '.posts.json');
+              if (fs.existsSync(manifestPath)) {
+                let manifest = { version: 1, updatedAt: 0, posts: {} };
+                try {
+                  const d = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+                  if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) manifest = d;
+                } catch {}
+                if (removePostFiles(manifest, [filename])) {
+                  try {
+                    manifest.updatedAt = Date.now();
+                    const mTmp = `${manifestPath}.${process.pid}x${Math.random().toString(36).slice(2, 8)}.tmp`;
+                    fs.writeFileSync(mTmp, JSON.stringify(manifest, null, 2), 'utf8');
+                    fs.renameSync(mTmp, manifestPath);
+                  } catch {}
+                }
+              }
+            }
+          } catch {}
 
           let remainingFiles = [];
           if (fs.existsSync(resolvedPath)) {
@@ -1038,6 +1171,7 @@ export function createApiHandler() {
           let downloaded = 0, skipped = 0, failed = 0;
           const videoPrefixSet = new Set();
           const failedUrls = [];
+          const recordedMedia = []; // [{ post, filename }] → 归并进 .posts.json
 
           for (const item of items) {
             try {
@@ -1048,20 +1182,22 @@ export function createApiHandler() {
               const base = harvestFilename(item.url, item.type);
               if (!base) { failed++; failedUrls.push(item.url); continue; }
               const finalPath0 = path.join(targetDir, base);
-              if (fs.existsSync(finalPath0)) { skipped++; continue; }
+              if (fs.existsSync(finalPath0)) {
+                skipped++;
+                recordedMedia.push({ post: item.post, filename: base });
+                continue;
+              }
 
-              // 临时文件按请求加唯一后缀：脚本重试等场景下可能出现同一条媒体的
-              // 并发下载，共享同名 .part 会互相截断，甚至让另一路 rename 时 ENOENT
-              const tmpPath = path.join(targetDir,
-                `.${base}.${process.pid}x${Math.random().toString(36).slice(2, 8)}.part`);
+              // 临时文件由 harvestDownload 内部按请求加唯一后缀：脚本重试等场景下
+              // 可能出现同一条媒体的并发下载，共享同名 .part 会互相截断，
+              // 甚至让另一路 rename 时 ENOENT；失败时函数自行清理临时文件
               let ok = false;
               for (const candidate of candidates) {
-                try { ok = await harvestDownload(candidate, tmpPath); } catch { ok = false; }
+                try { ok = await harvestDownload(candidate, targetDir, base); } catch { ok = false; }
                 if (ok) break;
               }
               if (!ok) {
                 console.warn(`[Harvest] 下载失败 @${username}: ${base} ← ${candidates[0]}`);
-                try { fs.unlinkSync(tmpPath); } catch {}
                 failed++;
                 failedUrls.push(item.url);
                 continue;
@@ -1084,10 +1220,12 @@ export function createApiHandler() {
               if (fs.existsSync(finalPath)) {
                 fs.unlinkSync(tmpPath);
                 skipped++;
+                recordedMedia.push({ post: item.post, filename: path.basename(finalPath) });
                 continue;
               }
               fs.renameSync(tmpPath, finalPath);
               downloaded++;
+              recordedMedia.push({ post: item.post, filename: path.basename(finalPath) });
               if (item.type === 'video') {
                 videoPrefixSet.add(mediaIdPrefix(item.url));
                 videoPrefixSet.add(mediaIdPrefix(item.poster));
@@ -1096,6 +1234,29 @@ export function createApiHandler() {
           }
           // 视频入库后删除其封面图，避免"封面 + 视频"重复展示
           removeVideoPosters(targetDir, videoPrefixSet);
+          // 帖子结构归并：文件名 → 所属帖子（shortcode/时间/caption）。
+          // manifest 就在已校验的 targetDir 下，读改写内联完成。
+          if (recordedMedia.length) {
+            const manifestPath = path.join(targetDir, '.posts.json');
+            let manifest = { version: 1, updatedAt: 0, posts: {} };
+            try {
+              if (fs.existsSync(manifestPath)) {
+                const d = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+                if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) manifest = d;
+              }
+            } catch {}
+            if (mergePostEntries(manifest, recordedMedia)) {
+              try {
+                manifest.updatedAt = Date.now();
+                const mTmp = `${manifestPath}.${process.pid}x${Math.random().toString(36).slice(2, 8)}.tmp`;
+                fs.writeFileSync(mTmp, JSON.stringify(manifest, null, 2), 'utf8');
+                fs.renameSync(mTmp, manifestPath);
+                console.log(`[Posts] @${username}: manifest 共 ${Object.keys(manifest.posts).length} 个帖子`);
+              } catch (err) {
+                console.warn(`[Posts] 保存 .posts.json 失败 @${username}: ${err.message}`);
+              }
+            }
+          }
 
           // 图集元数据，/api/collection/info 会读取并在 UI 显示 full_name
           try {
@@ -1171,9 +1332,29 @@ export function createApiHandler() {
           }
           const hash = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 24);
           const finalPath = path.join(targetDir, `${hash}${ext}`);
+          // 帖子归属写进 manifest（与 harvest 路由同一套内联读改写）
+          const recordBlobPost = () => {
+            const manifestPath = path.join(targetDir, '.posts.json');
+            let manifest = { version: 1, updatedAt: 0, posts: {} };
+            try {
+              if (fs.existsSync(manifestPath)) {
+                const d = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+                if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) manifest = d;
+              }
+            } catch {}
+            if (mergePostEntries(manifest, [{ post: data.post, filename: path.basename(finalPath) }])) {
+              try {
+                manifest.updatedAt = Date.now();
+                const mTmp = `${manifestPath}.${process.pid}x${Math.random().toString(36).slice(2, 8)}.tmp`;
+                fs.writeFileSync(mTmp, JSON.stringify(manifest, null, 2), 'utf8');
+                fs.renameSync(mTmp, manifestPath);
+              } catch {}
+            }
+          };
           if (fs.existsSync(finalPath)) {
             console.log(`[Harvest-Blob] @${username}: 内容已存在，跳过 (${hash})`);
             removeVideoPosters(targetDir, [mediaIdPrefix(data.posterUrl), mediaIdPrefix(data.srcUrl)]);
+            recordBlobPost();
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ success: true, username, downloaded: 0, skipped: 1 }));
             return;
@@ -1182,6 +1363,7 @@ export function createApiHandler() {
           fs.writeFileSync(tmpPath, buf);
           fs.renameSync(tmpPath, finalPath);
           removeVideoPosters(targetDir, [mediaIdPrefix(data.posterUrl), mediaIdPrefix(data.srcUrl)]);
+          recordBlobPost();
           try {
             const infoPath = path.join(targetDir, '.collection-info.json');
             if (!fs.existsSync(infoPath)) {

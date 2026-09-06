@@ -29,6 +29,8 @@ export default function useImagePreloader({
   const [isLoadingImages, setIsLoadingImages] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [tileAspectRatio, setTileAspectRatio] = useState(null);
+  // Instagram 帖子索引：filename -> { postNo, totalPosts, caption }；非 IG 图集为 null
+  const [postIndex, setPostIndex] = useState(null);
 
   const preloadCacheRef = useRef(new Map());
   const activeIdxRef = useRef(activeIdx);
@@ -145,6 +147,7 @@ export default function useImagePreloader({
     if (!currentCollName) {
       setImages([]);
       setTileAspectRatio(null);
+      setPostIndex(null);
       return;
     }
 
@@ -163,7 +166,41 @@ export default function useImagePreloader({
         }
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-        const newImages = data.images || [];
+        let newImages = data.images || [];
+
+        // Instagram 帖子结构：账号目录带 .posts.json 时按 帖子时间倒序 + 帖内
+        // carousel 顺序 重排（覆盖 imageSort），无帖子归属的文件排在其后。
+        // 普通图集没有 manifest，维持原排序。
+        setPostIndex(null);
+        try {
+          const pres = await fetch(`/api/collection/posts?collection=${encodeURIComponent(currentCollName)}`, { signal: controller.signal });
+          if (pres.ok) {
+            const pdata = await pres.json();
+            const fileList = new Set(newImages);
+            const posts = (Array.isArray(pdata.posts) ? pdata.posts : [])
+              .map(p => ({ ...p, media: (Array.isArray(p.media) ? p.media : []).filter(f => fileList.has(f)) }))
+              .filter(p => p.media.length > 0);
+            if (posts.length) {
+              const remaining = new Set(newImages);
+              const ordered = [];
+              const pMap = new Map();
+              posts.forEach((p, pi) => {
+                p.media.forEach(f => {
+                  if (!remaining.has(f)) return;
+                  remaining.delete(f);
+                  pMap.set(f, { postNo: pi + 1, totalPosts: posts.length, caption: p.caption || '' });
+                  ordered.push(f);
+                });
+              });
+              newImages.forEach(f => { if (remaining.has(f)) ordered.push(f); });
+              newImages = ordered;
+              setPostIndex(pMap);
+            }
+          }
+        } catch (e) {
+          if (e && e.name === 'AbortError') throw e; // 目录已切换，整体放弃
+          // 帖子接口不可用：退回默认排序
+        }
 
         // Preload first image before switching (prevents black flash)
         // Skip Image() preload for videos — they can't be preloaded via new Image()
@@ -331,7 +368,7 @@ export default function useImagePreloader({
 
   return {
     images, setImages, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
-    isLoadingImages, loadError, tileAspectRatio,
+    isLoadingImages, loadError, tileAspectRatio, postIndex,
     imagesRef, activeIdxRef, shouldStartFromLastRef,
     preloadAndAdvance, preloadImages, getImageDimensions, preloadCacheRef,
     videoFileNames, scheduleOutgoingClear,

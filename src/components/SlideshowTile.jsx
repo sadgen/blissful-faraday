@@ -79,7 +79,7 @@ export default function SlideshowTile({
   // --- Hook 1: Image Preloader ---
   const {
     images, setImages, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
-    isLoadingImages, loadError,
+    isLoadingImages, loadError, postIndex,
     imagesRef, activeIdxRef, shouldStartFromLastRef,
     preloadAndAdvance,
     videoFileNames,
@@ -251,6 +251,9 @@ export default function SlideshowTile({
   const getImageUrl = (imgName) =>
     `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(imgName)}`;
 
+  // 当前媒体的帖子信息（IG 账号图集才有）：第 x/y 帖 + caption
+  const activePostInfo = postIndex && images[activeIdx] ? postIndex.get(images[activeIdx]) : null;
+
   // --- Empty state ---
   if (collections.length === 0) {
     return (
@@ -411,7 +414,11 @@ export default function SlideshowTile({
               <span style={{ fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 @{collectionInfo?.username || currentCollName || '选择图片集'}
               </span>
-              {collectionInfo?.full_name && (
+              {activePostInfo ? (
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  第 {activePostInfo.postNo}/{activePostInfo.totalPosts} 帖{activePostInfo.caption ? ` · ${activePostInfo.caption}` : ''}
+                </span>
+              ) : collectionInfo?.full_name && (
                 <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {collectionInfo.full_name}
                 </span>

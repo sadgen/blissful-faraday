@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.2.1
-// @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。多图贴文秒级全量提取 + 个人主页旁听接口 JSON 全量采集多图 + 网页端多图横向并排免点击预览。
+// @version      1.3.0
+// @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。多图贴文秒级全量提取 + 个人主页旁听接口 JSON 全量采集多图 + 帖子结构（shortcode/时间/caption）随媒体回传 + 网页端多图横向并排免点击预览。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @match        https://www.instagram.com/*
@@ -252,7 +252,7 @@
     const vpfx = mediaIdPrefix(src);
     if (vpfx && videoPrefixes.has(vpfx)) return 0; // 已入库视频的封面图
     seenThisSession.add(key);
-    pending.set(key, { key, url: src, alt: fullResCandidates(src), type: 'image' });
+    pending.set(key, { key, url: src, alt: fullResCandidates(src), type: 'image', post: postFromContainer(img) || undefined });
     return 1;
   }
 
@@ -269,14 +269,42 @@
     const carouselItems = []; // [ { type: 'image'|'video', url, poster, thumbUrl } ]
     const visited = new Set();
     const seenUrls = new Set();
+    // 帖子归属：url -> { id, ts, caption }。探查命中帖子节点（code/shortcode）时
+    // 压栈，其子媒体全部归属栈顶帖子；画廊据此按 帖子时间倒序 + 帖内顺序 放映
+    const postStack = [];
+    const postByUrl = new Map();
     // JSON 旁听路径才收集单图节点的 display_url / thumbnail_src；
     // Fiber 路径不收集（时间线 DOM 里的视频封面没有 DOM 上下文可拦截）
     const includeDisplayUrl = !!opts.includeDisplayUrl;
+
+    // 帖子级元数据：REST 为 code/taken_at/caption.text，GraphQL 为 shortcode/taken_at_timestamp/edge_media_to_caption
+    function postMetaOf(obj) {
+      if (!obj || typeof obj !== 'object') return null;
+      const id = (typeof obj.code === 'string' && obj.code) || (typeof obj.shortcode === 'string' && obj.shortcode) || null;
+      if (!id) return null;
+      let ts = typeof obj.taken_at === 'number' ? obj.taken_at : obj.taken_at_timestamp;
+      if (typeof ts !== 'number') ts = null;
+      let caption = null;
+      if (obj.caption && typeof obj.caption.text === 'string') caption = obj.caption.text;
+      else if (obj.edge_media_to_caption && Array.isArray(obj.edge_media_to_caption.edges)
+        && obj.edge_media_to_caption.edges[0] && obj.edge_media_to_caption.edges[0].node
+        && typeof obj.edge_media_to_caption.edges[0].node.text === 'string') {
+        caption = obj.edge_media_to_caption.edges[0].node.text;
+      }
+      if (typeof caption === 'string') caption = caption.trim().slice(0, 200) || null;
+      return { id, ts, caption };
+    }
+
+    function currentPost() {
+      return postStack.length ? postStack[postStack.length - 1] : null;
+    }
 
     function addImg(url, thumbUrl) {
       if (!url || typeof url !== 'string' || !/^https:/.test(url) || seenUrls.has(url)) return;
       try { if (!IG_CDN.test(new URL(url).hostname)) return; } catch { return; }
       seenUrls.add(url);
+      const post = currentPost();
+      if (post) postByUrl.set(url, { id: post.id, ts: post.ts, caption: post.caption });
       images.push(url);
       carouselItems.push({ type: 'image', url, thumbUrl: thumbUrl || url });
     }
@@ -284,6 +312,8 @@
     function addVid(url, poster, thumbUrl) {
       if (!url || typeof url !== 'string' || !/^https:/.test(url) || !isVideoEntryUrl(url) || seenUrls.has(url)) return;
       seenUrls.add(url);
+      const post = currentPost();
+      if (post) postByUrl.set(url, { id: post.id, ts: post.ts, caption: post.caption });
       videos.push({ url, poster: poster || undefined });
       carouselItems.push({ type: 'video', url, poster, thumbUrl: thumbUrl || poster || url });
     }
@@ -292,6 +322,9 @@
       if (!obj || typeof obj !== 'object' || depth > maxDepth || visited.has(obj)) return;
       if (typeof Element !== 'undefined' && (obj instanceof Element || obj instanceof Node)) return;
       visited.add(obj);
+
+      const meta = postMetaOf(obj);
+      if (meta) postStack.push(meta);
 
       if (Array.isArray(obj)) {
         for (const item of obj) searchObj(item, depth + 1);
@@ -374,9 +407,11 @@
           }
         }
       }
+
+      if (meta) postStack.pop();
     }
 
-    return { searchObj, images, videos, carouselItems };
+    return { searchObj, images, videos, carouselItems, postByUrl };
   }
 
   function extractMediaFromFiber(rootEl) {
@@ -396,7 +431,7 @@
       }
     } catch {}
 
-    return { images: col.images, videos: col.videos, carouselItems: col.carouselItems };
+    return { images: col.images, videos: col.videos, carouselItems: col.carouselItems, postByUrl: col.postByUrl };
   }
 
   // ─── 接口 JSON 旁听：个人主页网格多图全量采集 ────────────────────────────
@@ -457,22 +492,22 @@
       const vpfx = mediaIdPrefix(imgUrl);
       if (vpfx && videoPrefixes.has(vpfx)) continue;
       seenThisSession.add(key);
-      pending.set(key, { key, url: imgUrl, alt: fullResCandidates(imgUrl), type: 'image' });
+      pending.set(key, { key, url: imgUrl, alt: fullResCandidates(imgUrl), type: 'image', post: col.postByUrl.get(imgUrl) || undefined });
       added++;
     }
     for (const vid of col.videos) {
       const key = fileKey(vid.url);
       if (!key || seenThisSession.has(key) || pending.has(key)) continue;
       seenThisSession.add(key);
-      pending.set(key, { key, url: vid.url, alt: [], type: 'video', poster: vid.poster });
+      pending.set(key, { key, url: vid.url, alt: [], type: 'video', poster: vid.poster, post: col.postByUrl.get(vid.url) || undefined });
       added++;
     }
     return added;
   }
 
   function extractDirectVideoUrls(videoEl) {
-    const res = extractMediaFromFiber(videoEl);
-    return res.videos.map(v => v.url);
+    const media = extractMediaFromFiber(videoEl);
+    return { urls: media.videos.map(v => v.url), postByUrl: media.postByUrl };
   }
 
   // ─── 网页端 UI：多图卡片横向并排预览（免去翻页点击）──────────────────────
@@ -572,7 +607,7 @@
         const vpfx = mediaIdPrefix(imgUrl);
         if (vpfx && videoPrefixes.has(vpfx)) continue;
         seenThisSession.add(key);
-        pending.set(key, { key, url: imgUrl, alt: fullResCandidates(imgUrl), type: 'image' });
+        pending.set(key, { key, url: imgUrl, alt: fullResCandidates(imgUrl), type: 'image', post: media.postByUrl.get(imgUrl) || undefined });
         added++;
       }
     }
@@ -583,7 +618,7 @@
         const key = fileKey(vid.url);
         if (!key || seenThisSession.has(key) || pending.has(key)) continue;
         seenThisSession.add(key);
-        pending.set(key, { key, url: vid.url, alt: [], type: 'video', poster: vid.poster });
+        pending.set(key, { key, url: vid.url, alt: [], type: 'video', poster: vid.poster, post: media.postByUrl.get(vid.url) || undefined });
         added++;
       }
     }
@@ -596,18 +631,31 @@
     return added;
   }
 
+  // DOM 兜底路径的帖子归属：从帖子容器（article/浮层）里的 /p/{code}/ 或 /reel/{code}/ 链接还原 shortcode。
+  // DOM 拿不到发帖时间，ts/caption 留空，服务端归并时若 Fiber 路径已补全会保留已有的值。
+  function postFromContainer(el) {
+    try {
+      const c = el.closest('article') || el.closest('div[role="dialog"]') || el.closest('li');
+      if (!c) return null;
+      const a = c.querySelector('a[href*="/p/"], a[href*="/reel/"]');
+      const m = a && (a.getAttribute('href') || '').match(/\/(?:p|reel)\/([A-Za-z0-9_-]+)/);
+      return m ? { id: m[1], ts: null, caption: null } : null;
+    } catch { return null; }
+  }
+
   function harvestVideo(v, pending, username) {
     const poster = posterUrlOf(v);
 
     // 1. 优先尝试从 React 内部状态提取官方 MP4 高清直链（秒存完整原档）
-    const directUrls = extractDirectVideoUrls(v);
-    if (directUrls.length > 0) {
+    const direct = extractDirectVideoUrls(v);
+    const domPost = postFromContainer(v);
+    if (direct.urls.length > 0) {
       let directAdded = 0;
-      for (const dUrl of directUrls) {
+      for (const dUrl of direct.urls) {
         const key = fileKey(dUrl);
         if (!key || seenThisSession.has(key) || pending.has(key)) continue;
         seenThisSession.add(key);
-        pending.set(key, { key, url: dUrl, alt: [], type: 'video', poster });
+        pending.set(key, { key, url: dUrl, alt: [], type: 'video', poster, post: direct.postByUrl.get(dUrl) || domPost || undefined });
         directAdded++;
       }
       if (directAdded > 0) {
@@ -624,7 +672,7 @@
     if (src.startsWith('blob:')) {
       if (v.dataset.bfHarvested) return 0;
       v.dataset.bfHarvested = '1';
-      blobQueue.push({ username, videoEl: v });
+      blobQueue.push({ username, videoEl: v, post: domPost });
       return 0;
     }
     if (!/^https:/.test(src)) return 0;
@@ -632,7 +680,7 @@
     const key = fileKey(src);
     if (!key || seenThisSession.has(key) || pending.has(key)) return 0;
     seenThisSession.add(key);
-    pending.set(key, { key, url: src, alt: [], type: 'video', poster });
+    pending.set(key, { key, url: src, alt: [], type: 'video', poster, post: domPost || undefined });
     return 1;
   }
 
@@ -755,7 +803,7 @@
         method: 'POST',
         url: GALLERY() + '/api/instagram/harvest-blob',
         headers: { 'Content-Type': 'application/json' },
-        data: JSON.stringify({ username, data: reader.result, posterUrl: o.posterUrl || undefined, srcUrl: o.srcUrl || undefined, debug: o.debug || undefined }),
+        data: JSON.stringify({ username, data: reader.result, posterUrl: o.posterUrl || undefined, srcUrl: o.srcUrl || undefined, post: o.post || undefined, debug: o.debug || undefined }),
         timeout: 180000,
         onload: res => {
           let d = {}; try { d = JSON.parse(res.responseText); } catch { }
@@ -929,21 +977,21 @@
 
   // MSE 分片拼装优先；拼不全则用记录到的 URL 做一次缓存优先的完整 GET；
   // 仍失败才退级实时录制（onFail）。
-  function trySegFullCapture(username, onFail, posterUrl) {
+  function trySegFullCapture(username, onFail, posterUrl, post) {
     const debug = tapStats();
     const g = bestSegGroup();
     if (!g) { onFail(); return; }
     const assembled = assembleSegGroup(g);
     if (assembled && assembled.byteLength > 65536) {
       uploadVideoBlob(username, new Blob([assembled], { type: g.ct || 'video/mp4' }),
-        msg => flashBadge(msg), { okPrefix: '🎬 分片拼装完整视频已存', debug, posterUrl, srcUrl: g.url });
+        msg => flashBadge(msg), { okPrefix: '🎬 分片拼装完整视频已存', debug, posterUrl, srcUrl: g.url, post });
       return;
     }
     const pageFetch = (typeof unsafeWindow !== 'undefined' && unsafeWindow.fetch)
       ? unsafeWindow.fetch.bind(unsafeWindow) : window.fetch.bind(window);
     pageFetch(g.url).then(r => r.blob()).then(b => {
       if (b && b.size > 65536) uploadVideoBlob(username, b, msg => flashBadge(msg),
-        { okPrefix: '🎬 完整视频已存（缓存补全）', debug, posterUrl, srcUrl: g.url });
+        { okPrefix: '🎬 完整视频已存（缓存补全）', debug, posterUrl, srcUrl: g.url, post });
       else onFail();
     }).catch(onFail);
   }
@@ -995,7 +1043,7 @@
   }
 
   // 按体积从大到小尝试最多 3 个实际链接，完整 GET 后校验视频魔数再入库
-  function tryActualLinkCapture(username, onFail, posterUrl) {
+  function tryActualLinkCapture(username, onFail, posterUrl, post) {
     if (!FULL_DL_ENABLED()) { onFail(); return; }
     const cands = actualLinkCandidates();
     if (!cands.length) { onFail(); return; }
@@ -1012,16 +1060,17 @@
         if (!(isMp4 || isWebm) || buf.byteLength < 300 * 1024) { tryNext(); return; }
         uploadVideoBlob(username, new Blob([buf], { type: isMp4 ? 'video/mp4' : 'video/webm' }),
           msg => flashBadge(msg),
-          { okPrefix: '🎬 实际链接完整下载已存', debug: { links: cands.length, tried: i, bytes: buf.byteLength }, posterUrl, srcUrl: cand.url });
+          { okPrefix: '🎬 实际链接完整下载已存', debug: { links: cands.length, tried: i, bytes: buf.byteLength }, posterUrl, srcUrl: cand.url, post });
       }).catch(tryNext);
     };
     tryNext();
   }
 
   let activeRec = null; // 单录制槽：新录制抢占旧录制
-  function startRecording(username, videoEl) {
+  function startRecording(username, videoEl, post) {
     if (videoEl.dataset.bfRecording || videoEl.ended) return;
     videoEl.dataset.bfRecording = '1';
+    const recPost = post || postFromContainer(videoEl);
     try {
       const stream = videoEl.captureStream
         ? videoEl.captureStream()
@@ -1051,7 +1100,7 @@
         const blob = new Blob(chunks, { type: 'video/webm' });
         if (blob.size < 65536) { flashBadge('🎬 录制内容过短，未入库'); return; }
         flashBadge('🎬 录制完成，视频入库中...');
-        uploadVideoBlob(username, blob, msg => flashBadge(msg), { okPrefix: '🎬 录制视频已存', posterUrl: posterUrlOf(videoEl) });
+        uploadVideoBlob(username, blob, msg => flashBadge(msg), { okPrefix: '🎬 录制视频已存', posterUrl: posterUrlOf(videoEl), post: recPost });
       };
       videoEl.addEventListener('ended', stopOnce, { once: true });
       // 暂停（含缓冲）超过 30 秒视为看完，落库已录部分
@@ -1069,7 +1118,7 @@
   function processBlobQueue() {
     if (blobBusy || !blobQueue.length) return;
     blobBusy = true;
-    const { username, videoEl } = blobQueue.shift();
+    const { username, videoEl, post } = blobQueue.shift();
     const finish = (msg) => { flashBadge(msg); blobBusy = false; };
     const src = videoEl.currentSrc || videoEl.src;
     if (!username || !src || !src.startsWith('blob:')) { blobBusy = false; return; }
@@ -1079,14 +1128,14 @@
     pageFetch(src).then(r => r.blob()).then(blob => {
       if (!blob || blob.size < 65536) {
         blobBusy = false;
-        trySegFullCapture(username, () => tryActualLinkCapture(username, () => startRecording(username, videoEl)), posterUrl);
+        trySegFullCapture(username, () => tryActualLinkCapture(username, () => startRecording(username, videoEl, post), posterUrl, post), posterUrl, post);
         return;
       }
       if (blob.size > 150 * 1024 * 1024) { finish('🎬 视频超过 150MB，已跳过'); return; }
-      uploadVideoBlob(username, blob, msg => finish(msg), { posterUrl });
+      uploadVideoBlob(username, blob, msg => finish(msg), { posterUrl, post });
     }).catch(() => {
       blobBusy = false;
-      trySegFullCapture(username, () => tryActualLinkCapture(username, () => startRecording(username, videoEl)), posterUrl);
+      trySegFullCapture(username, () => tryActualLinkCapture(username, () => startRecording(username, videoEl, post), posterUrl, post), posterUrl, post);
     });
   }
 

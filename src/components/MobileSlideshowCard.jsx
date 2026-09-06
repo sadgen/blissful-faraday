@@ -39,6 +39,8 @@ export default function MobileSlideshowCard({
   const [collectionInfo, setCollectionInfo] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
+  // Instagram 帖子索引：filename -> { postNo, totalPosts, caption }；非 IG 图集为 null
+  const [postIndex, setPostIndex] = useState(null);
   const videoFileNamesRef = useRef(new Set());
   const videoFileNames = videoFileNamesRef.current;
   
@@ -206,7 +208,36 @@ export default function MobileSlideshowCard({
         if (data.error) {
           throw new Error(data.error);
         }
-        const newImages = data.images || [];
+        let newImages = data.images || [];
+
+        // Instagram 帖子结构：按 帖子时间倒序 + 帖内 carousel 顺序 重排，普通图集不变
+        setPostIndex(null);
+        try {
+          const pres = await fetch(`/api/collection/posts?collection=${encodeURIComponent(currentCollName)}`);
+          if (pres.ok) {
+            const pdata = await pres.json();
+            const fileList = new Set(newImages);
+            const posts = (Array.isArray(pdata.posts) ? pdata.posts : [])
+              .map(p => ({ ...p, media: (Array.isArray(p.media) ? p.media : []).filter(f => fileList.has(f)) }))
+              .filter(p => p.media.length > 0);
+            if (posts.length) {
+              const remaining = new Set(newImages);
+              const ordered = [];
+              const pMap = new Map();
+              posts.forEach((p, pi) => {
+                p.media.forEach(f => {
+                  if (!remaining.has(f)) return;
+                  remaining.delete(f);
+                  pMap.set(f, { postNo: pi + 1, totalPosts: posts.length, caption: p.caption || '' });
+                  ordered.push(f);
+                });
+              });
+              newImages.forEach(f => { if (remaining.has(f)) ordered.push(f); });
+              newImages = ordered;
+              setPostIndex(pMap);
+            }
+          }
+        } catch { /* 帖子接口不可用：退回默认排序 */ }
 
         // Detect video files
         const videoExts = new Set(['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv']);
@@ -895,11 +926,17 @@ export default function MobileSlideshowCard({
                   <div style={{ fontSize: '0.7rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#fff' }}>
                     {currentCollName}
                   </div>
-                  {collectionInfo?.full_name && (
-                    <div style={{ fontSize: '0.55rem', color: 'rgba(255,255,255,0.5)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {collectionInfo.full_name}
-                    </div>
-                  )}
+                  {(() => {
+                    const pinfo = postIndex && images[activeIdx] ? postIndex.get(images[activeIdx]) : null;
+                    const secondLine = pinfo
+                      ? `第 ${pinfo.postNo}/${pinfo.totalPosts} 帖${pinfo.caption ? ` · ${pinfo.caption}` : ''}`
+                      : (collectionInfo?.full_name || '');
+                    return secondLine && (
+                      <div style={{ fontSize: '0.55rem', color: 'rgba(255,255,255,0.5)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {secondLine}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
               <span style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.6)', marginRight: 4, flexShrink: 0 }}>
