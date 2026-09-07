@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.3.3
+// @version      1.3.4
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。多图贴文秒级全量提取 + 个人主页旁听接口 JSON 全量采集多图 + 帖子结构（shortcode/时间/caption）随媒体回传 + 网页端多图横向并排免点击预览。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -11,6 +11,8 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        GM_listValues
+// @grant        GM_deleteValue
 // @grant        unsafeWindow
 // @connect      localhost
 // @connect      127.0.0.1
@@ -70,11 +72,7 @@
     const v = prompt(ADDRESS_PROMPT, DEFAULT_GALLERY);
     if (v && v.trim()) GM_setValue('galleryUrl', v.trim().replace(/\/+$/, ''));
   }
-  GM_registerMenuCommand('清空当前图集的同步历史', () => {
-    const username = profileFromPath();
-    if (username) { GM_setValue(sentKey(username), '[]'); flashBadge(`已清空 @${username} 的同步历史`); }
-    else flashBadge('请先进入某个图集主页');
-  });
+
 
   // ─── 媒体地址识别 ────────────────────────────────────────────────────────
   const RESERVED = new Set(['p', 'reel', 'reels', 'stories', 'explore', 'accounts', 'direct',
@@ -143,7 +141,6 @@
                                            // 在途期间不得重发同一批，否则并发重复下载
                                            // 会互相踩踏临时文件并触发 IG CDN 限流
   const blobQueue = [];                    // 流式视频待中继队列 {username, videoEl}
-  const SENT_CAP = 3000;
   const BATCH_MAX = 40;
 
   // ─── 视频封面去重 ────────────────────────────────────────────────────────
@@ -192,16 +189,6 @@
     return img ? bestFromSrcset(img) : '';
   }
 
-  const sentKey = u => 'bf_sent_' + u;
-  function loadSent(username) {
-    try { return new Set(JSON.parse(GM_getValue(sentKey(username), '[]'))); }
-    catch { return new Set(); }
-  }
-  function saveSent(username, set) {
-    const arr = [...set];
-    if (arr.length > SENT_CAP) arr.splice(0, arr.length - SENT_CAP);
-    GM_setValue(sentKey(username), JSON.stringify(arr));
-  }
 
   // ─── 页面扫描 ────────────────────────────────────────────────────────────
   // 从容器内第一个站内链接归属用户名（帖子卡片/浮层头部的作者链接）
@@ -750,10 +737,11 @@
   function flush() {
     for (const [username, pending] of pendingByUser) {
       if (!pending.size || sendingUsers.has(username)) continue;
-      const sent = loadSent(username);
+      // 去重在服务器按文件名执行（已入库的回传会被跳过并补登帖子归属），
+      // 浏览器不再维护同步名单：任何设备/会话刷到旧内容都能自动补全归属
       const items = [];
       for (const [key, item] of pending) {
-        if (!sent.has(key) && (failedCount.get(key) || 0) < 3) items.push(item);
+        if ((failedCount.get(key) || 0) < 3) items.push(item);
         if (items.length >= BATCH_MAX) break;
       }
       if (!items.length) continue;
@@ -779,11 +767,9 @@
                 return;
               }
               pending.delete(it.key);
-              sent.add(it.key);
               failedCount.delete(it.key);
               if (it.type === 'video') { registerVideoPrefix(it.url); registerVideoPrefix(it.poster); }
             });
-            saveSent(username, sent);
             flashBadge(`@${username} 新存 ${data.downloaded} · 已有 ${data.skipped}` +
               (data.failed ? ` · 失败 ${data.failed}` : ''));
           } else if (res.status === 401) {
@@ -1196,6 +1182,15 @@
   }
 
   // ─── 定时器 ──────────────────────────────────────────────────────────────
+  // 清理 v1.3.3 及之前"浏览器同步名单"的遗留存储（去重已改为服务器按文件名执行）
+  try {
+    let cleaned = 0;
+    for (const k of GM_listValues()) {
+      if (String(k).startsWith('bf_sent_')) { GM_deleteValue(k); cleaned++; }
+    }
+    if (cleaned) console.log(`[bf] 已清理 ${cleaned} 个旧版同步名单键`);
+  } catch { }
+
   hookNetwork();       // 旁听播放器的视频分片请求（用于零请求拼装）
   initPerfObserver();  // 记录播放器的实际视频链接（用于完整 GET 下载）
   setInterval(scan, 1500);
