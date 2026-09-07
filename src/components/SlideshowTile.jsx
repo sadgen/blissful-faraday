@@ -409,6 +409,14 @@ export default function SlideshowTile({
                       autoPlay
                       playsInline
                       preload="auto"
+                      onError={() => {
+                        // 文件已被删除/不存在：剔除出播放队列，卡在末尾则换下一图集
+                        removeImage(imgName);
+                        if (activeIdx >= images.length - 1) {
+                          if (images.length <= 1) skipToNextCollection(1);
+                          else setActiveIdx(Math.max(0, images.length - 2));
+                        }
+                      }}
                       onEnded={() => advanceSlide(1)}
                       onLoadedMetadata={(e) => {
                         e.target.playbackRate = videoSpeed;
@@ -430,19 +438,27 @@ export default function SlideshowTile({
                     />
                   ) : null
                 ) : (
-                  <img
-                    src={getImageUrl(imgName)}
-                    alt={imgName}
-                    decoding="async"
-                    draggable="false"
-                    className="slide-image-main"
-                    onLoad={() => {
-                      if (!hasReportedReadyRef.current && onTileReady) {
-                        hasReportedReadyRef.current = true;
-                        onTileReady(tileId);
-                      }
-                    }}
-                  />
+                    <img
+                      src={getImageUrl(imgName)}
+                      alt={imgName}
+                      decoding="async"
+                      draggable="false"
+                      className="slide-image-main"
+                      onError={() => {
+                        // 文件已被删除/不存在：剔除出播放队列，卡在末尾则换下一图集
+                        removeImage(imgName);
+                        if (activeIdx >= images.length - 1) {
+                          if (images.length <= 1) skipToNextCollection(1);
+                          else setActiveIdx(Math.max(0, images.length - 2));
+                        }
+                      }}
+                      onLoad={() => {
+                        if (!hasReportedReadyRef.current && onTileReady) {
+                          hasReportedReadyRef.current = true;
+                          onTileReady(tileId);
+                        }
+                      }}
+                    />
                 )}
               </div>
             );

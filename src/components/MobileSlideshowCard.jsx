@@ -1249,6 +1249,15 @@ export default function MobileSlideshowCard({
                         alt={imgName}
                         loading="lazy"
                         className="mobile-card-image"
+                        onError={() => {
+                          // 文件已被删除/不存在：剔除出播放队列，卡在末尾则换下一图集
+                          preloadCacheRef.current.delete(`${currentCollName}:${imgName}`);
+                          setImages(prev => prev.filter(x => x !== imgName));
+                          if (activeIdx >= images.length - 1) {
+                            if (images.length <= 1) skipToNextCollection(1);
+                            else setActiveIdx(Math.max(0, images.length - 2));
+                          }
+                        }}
                         style={{
                           transform: isSwiping
                             ? `translateX(${touchDelta.x * 0.4}px)`
