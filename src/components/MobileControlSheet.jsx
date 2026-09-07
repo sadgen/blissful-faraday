@@ -50,6 +50,10 @@ export default function MobileControlSheet({
   setVideoSpeed,
   imageSort,
   setImageSort,
+  recentPostDays,
+  setRecentPostDays,
+  recentDlDays,
+  setRecentDlDays,
 }) {
   const [isHistoryOpen, setIsHistoryOpen] = React.useState(false);
   const historyRef = React.useRef(null);
@@ -297,6 +301,35 @@ export default function MobileControlSheet({
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Time Range Filters */}
+              <div className="mobile-sheet-section">
+                <div className="mobile-sheet-section-title">
+                  🕐 时间范围
+                </div>
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: 8 }}>
+                  只看最近几天发布/下载的内容（发布按帖子时间，下载按落盘时间；普通文件夹无发布时间，启用发布过滤时会隐藏）
+                </div>
+                {[
+                  { label: '发布范围', value: recentPostDays, setter: setRecentPostDays },
+                  { label: '下载范围', value: recentDlDays, setter: setRecentDlDays },
+                ].map(f => (
+                  <div key={f.label} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap', width: '56px' }}>{f.label}</span>
+                    <div className="mobile-capsule-group" style={{ flex: 1 }}>
+                      {[['0', '全部'], ['1', '1天'], ['3', '3天'], ['7', '7天'], ['14', '14天'], ['30', '30天'], ['90', '90天']].map(([v, l]) => (
+                        <button
+                          key={v}
+                          className={`mobile-capsule-btn ${String(f.value) === v ? 'active' : ''}`}
+                          onClick={() => f.setter(parseInt(v, 10))}
+                        >
+                          {l}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
 
               {/* Video Speed Control */}

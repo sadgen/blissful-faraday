@@ -91,6 +91,9 @@ export default function App() {
   const [isSyncMode, setIsSyncMode] = useState(savedConfig?.isSyncMode !== undefined ? savedConfig.isSyncMode : false);
   const [videoSpeed, setVideoSpeed] = useState(savedConfig?.videoSpeed || 2);
   const [imageSort, setImageSort] = useState(savedConfig?.imageSort || 'name');
+  // 时间范围过滤（0 = 全部）：发布按帖子 taken_at，下载按文件落盘时间
+  const [recentPostDays, setRecentPostDays] = useState(savedConfig?.recentPostDays || 0);
+  const [recentDlDays, setRecentDlDays] = useState(savedConfig?.recentDlDays || 0);
 
   // Track page visibility to pause/resume slideshow when tab is inactive/active
   const [isDocumentVisible, setIsDocumentVisible] = useState(document.visibilityState === 'visible');
@@ -206,15 +209,31 @@ export default function App() {
   // 普通文件夹不会命中）展开为 `user::postId` 虚拟图集，未归属文件 >0 时
   // 追加 `user::__unsorted`。无 manifest 的目录原样保留——普通文件夹的
   // 展示与播放完全不受影响。
+  // 时间范围过滤：发布范围按帖子 taken_at（无发布时间的条目会被隐藏）；
+  // 下载范围按文件落盘时间（普通文件夹的 mtime 即其下载时间，同样适用）。
   const expandInstagramPosts = async (collections) => {
+    const now = Date.now();
+    const dayMs = 86400000;
+    const postCutoff = recentPostDays > 0 ? now - recentPostDays * dayMs : null;
+    const dlCutoff = recentDlDays > 0 ? now - recentDlDays * dayMs : null;
+    // 无发布时间的条目（普通文件夹/无清单账号）：发布过滤开启时隐藏，否则只受下载过滤约束
+    const keepUntimed = (c) => {
+      if (postCutoff !== null) return;
+      if (!dlCutoff || (c?.mtime || 0) >= dlCutoff) out.push(c);
+    };
     const out = [];
     await Promise.all(collections.map(async (c) => {
-      if (!c || !/^[A-Za-z0-9._]{1,30}$/.test(c.name || '')) { out.push(c); return; }
+      if (!c || !/^[A-Za-z0-9._]{1,30}$/.test(c.name || '')) { keepUntimed(c); return; }
       try {
         const res = await fetch(`/api/collection/posts?collection=${encodeURIComponent(c.name)}`);
-        if (!res.ok) { out.push(c); return; }
+        if (!res.ok) { keepUntimed(c); return; }
         const data = await res.json();
-        const posts = Array.isArray(data.posts) ? data.posts : [];
+        const posts = (Array.isArray(data.posts) ? data.posts : []).filter(p => {
+          if (postCutoff !== null && (!p.ts || p.ts * 1000 < postCutoff)) return false;
+          if (dlCutoff !== null && (!p.dl || p.dl < dlCutoff)) return false;
+          return true;
+        });
+        if (!posts.length && postCutoff !== null) return; // 发布过滤下无合格帖子：整个账号隐藏
         if (!posts.length) { out.push(c); return; }
         for (const p of posts) {
           out.push({ name: `${c.name}::${p.id}`, mtime: (p.ts || 0) * 1000 });
@@ -224,9 +243,12 @@ export default function App() {
           const idata = await ires.json();
           const inPosts = new Set(posts.flatMap(p => p.media || []));
           const leftovers = (idata.images || []).filter(f => !inPosts.has(f));
-          if (leftovers.length) out.push({ name: `${c.name}::__unsorted`, mtime: c.mtime });
+          // 未归类条目无发布时间：发布过滤开启时不显示
+          if (leftovers.length && postCutoff === null && (!dlCutoff || (c.mtime || 0) >= dlCutoff)) {
+            out.push({ name: `${c.name}::__unsorted`, mtime: c.mtime });
+          }
         }
-      } catch { out.push(c); }
+      } catch { keepUntimed(c); }
     }));
     return out;
   };
@@ -462,14 +484,21 @@ export default function App() {
       zoomScale,
       isHUDpinned,
       videoSpeed,
-      imageSort
+      imageSort,
+      recentPostDays,
+      recentDlDays
     };
     try {
       localStorage.setItem('blissfulFaradayConfig', JSON.stringify(config));
     } catch (err) {
       console.warn('Failed to save config:', err);
     }
-  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, isSyncMode, sortMethod, isAutoTiling, zoomScale, isHUDpinned, videoSpeed, imageSort]);
+  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, isSyncMode, sortMethod, isAutoTiling, zoomScale, isHUDpinned, videoSpeed, imageSort, recentPostDays, recentDlDays]);
+
+  // 时间范围过滤变化时重新拉取图集列表
+  useEffect(() => {
+    fetchCollections();
+  }, [recentPostDays, recentDlDays]);
 
   // Get current grid config
   const gridConfig = GRID_PRESETS[tileCount] || GRID_PRESETS[1];
@@ -1009,6 +1038,10 @@ export default function App() {
           setVideoSpeed={setVideoSpeed}
           imageSort={imageSort}
           setImageSort={setImageSort}
+          recentPostDays={recentPostDays}
+          setRecentPostDays={setRecentPostDays}
+          recentDlDays={recentDlDays}
+          setRecentDlDays={setRecentDlDays}
           onQueueDelete={queueDelete}
         />
         <UndoToast toasts={toasts} />
@@ -1085,6 +1118,10 @@ export default function App() {
       setVideoSpeed={setVideoSpeed}
       imageSort={imageSort}
       setImageSort={setImageSort}
+      recentPostDays={recentPostDays}
+      setRecentPostDays={setRecentPostDays}
+      recentDlDays={recentDlDays}
+      setRecentDlDays={setRecentDlDays}
       onQueueDelete={queueDelete}
     />
     <UndoToast toasts={toasts} />

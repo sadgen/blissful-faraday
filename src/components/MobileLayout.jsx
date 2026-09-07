@@ -156,6 +156,10 @@ export default function MobileLayout({
   setVideoSpeed,
   imageSort,
   setImageSort,
+  recentPostDays,
+  setRecentPostDays,
+  recentDlDays,
+  setRecentDlDays,
   onQueueDelete,
 }) {
   const [showZoomSlider, setShowZoomSlider] = useState(false);
@@ -485,6 +489,10 @@ export default function MobileLayout({
         setVideoSpeed={setVideoSpeed}
         imageSort={imageSort}
         setImageSort={setImageSort}
+        recentPostDays={recentPostDays}
+        setRecentPostDays={setRecentPostDays}
+        recentDlDays={recentDlDays}
+        setRecentDlDays={setRecentDlDays}
       />
 
       {/* 5. Floating Vertical Zoom Slider on Right Screen Edge */}

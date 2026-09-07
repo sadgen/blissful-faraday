@@ -1148,10 +1148,21 @@ export function createApiHandler() {
             if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) manifest = d;
           }
         } catch {}
-        // 未归属集合没有帖子结构；帖子图集返回整账号帖子列表（编号按账号计）
+        // 未归属集合没有帖子结构；帖子图集返回整账号帖子列表（编号按账号计）。
+        // dl 为帖内文件的最新落盘时间（毫秒），供前端做"最近几日下载"过滤。
         const posts = (comp && comp[1] === '__unsorted')
           ? []
-          : sortedPostsOf(manifest);
+          : sortedPostsOf(manifest).map(p => {
+              let dl = 0;
+              for (const f of p.media) {
+                if (typeof f !== 'string' || f.includes('/') || f.includes('\\')) continue;
+                try {
+                  const st = fs.statSync(path.join(resolvedPath, f));
+                  if (st.mtimeMs > dl) dl = st.mtimeMs;
+                } catch {}
+              }
+              return { ...p, dl: dl || null };
+            });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ collection, posts }));
       } catch (err) {
@@ -1507,6 +1518,8 @@ export function createApiHandler() {
                 .filter(u => typeof u === 'string' && isHarvestHostAllowed(u));
               if (!candidates.length) { failed++; failedUrls.push(item.url); continue; }
 
+              // 头像专用 CDN 路径段：拒收入库（旧版脚本仍会回传）
+              if (/\/t51\.2885-19\//.test(item.url)) { skipped++; continue; }
               const base = harvestFilename(item.url, item.type);
               if (!base) { failed++; failedUrls.push(item.url); continue; }
               const finalPath0 = path.join(targetDir, base);

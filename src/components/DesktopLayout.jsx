@@ -75,6 +75,10 @@ export default function DesktopLayout({
   setVideoSpeed,
   imageSort,
   setImageSort,
+  recentPostDays,
+  setRecentPostDays,
+  recentDlDays,
+  setRecentDlDays,
   dirResetKey,
   onQueueDelete,
 }) {
@@ -380,6 +384,10 @@ export default function DesktopLayout({
           setVideoSpeed={setVideoSpeed}
           imageSort={imageSort}
           setImageSort={setImageSort}
+          recentPostDays={recentPostDays}
+          setRecentPostDays={setRecentPostDays}
+          recentDlDays={recentDlDays}
+          setRecentDlDays={setRecentDlDays}
         />
       )}
 

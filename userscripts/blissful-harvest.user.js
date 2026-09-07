@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.3.1
+// @version      1.3.2
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。多图贴文秒级全量提取 + 个人主页旁听接口 JSON 全量采集多图 + 帖子结构（shortcode/时间/caption）随媒体回传 + 网页端多图横向并排免点击预览。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -247,6 +247,8 @@
     const src = bestFromSrcset(img);
     if (!src || !/^https:/.test(src)) return 0;
     try { if (!IG_CDN.test(new URL(src).hostname)) return 0; } catch { return 0; }
+    // 头像专用 CDN 路径段（t51.2885-19），与普通帖子图（t51.2885-15）区分
+    if (/\/t51\.2885-19\//.test(src)) return 0;
     const key = fileKey(src);
     if (!key || seenThisSession.has(key) || pending.has(key)) return 0;
     const vpfx = mediaIdPrefix(src);
@@ -302,6 +304,7 @@
     function addImg(url, thumbUrl) {
       if (!url || typeof url !== 'string' || !/^https:/.test(url) || seenUrls.has(url)) return;
       try { if (!IG_CDN.test(new URL(url).hostname)) return; } catch { return; }
+      if (/\/t51\.2885-19\//.test(url)) return; // 头像不入库
       seenUrls.add(url);
       const post = currentPost();
       if (post) postByUrl.set(url, { id: post.id, ts: post.ts, caption: post.caption });

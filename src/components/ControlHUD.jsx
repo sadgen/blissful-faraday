@@ -35,6 +35,10 @@ export default function ControlHUD({
   setVideoSpeed,
   imageSort,
   setImageSort,
+  recentPostDays,
+  setRecentPostDays,
+  recentDlDays,
+  setRecentDlDays,
 }) {
   const [isHovered, setIsHovered] = useState(false);
 
@@ -273,6 +277,34 @@ export default function ControlHUD({
                 </button>
               ))}
             </div>
+          </div>
+        </div>
+
+        {/* Time Range Filters */}
+        <div className="hud-section hud-section-compact">
+          <span className="hud-label" style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', fontSize: '0.65rem' }}>
+            范围
+          </span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {[
+              { label: '发布', value: recentPostDays, setter: setRecentPostDays, title: '只看最近几天发布的帖子（无发布时间的条目会隐藏）' },
+              { label: '下载', value: recentDlDays, setter: setRecentDlDays, title: '只看最近几天下载的内容（按文件落盘时间，普通文件夹同样适用）' },
+            ].map(f => (
+              <div key={f.label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{f.label}:</span>
+                <select
+                  className="glass-select"
+                  value={String(f.value)}
+                  onChange={(e) => f.setter(parseInt(e.target.value, 10))}
+                  title={f.title}
+                  style={{ fontSize: '0.55rem', padding: '0 4px', height: '18px', flex: 1, cursor: 'pointer' }}
+                >
+                  {[['0', '全部'], ['1', '1天'], ['3', '3天'], ['7', '7天'], ['14', '14天'], ['30', '30天'], ['90', '90天']].map(([v, l]) => (
+                    <option key={v} value={v}>{l}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
           </div>
         </div>
 
