@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.3.2
+// @version      1.3.3
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。多图贴文秒级全量提取 + 个人主页旁听接口 JSON 全量采集多图 + 帖子结构（shortcode/时间/caption）随媒体回传 + 网页端多图横向并排免点击预览。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -637,16 +637,31 @@
     return added;
   }
 
-  // DOM 兜底路径的帖子归属：从帖子容器（article/浮层）里的 /p/{code}/ 或 /reel/{code}/ 链接还原 shortcode。
-  // DOM 拿不到发帖时间，ts/caption 留空，服务端归并时若 Fiber 路径已补全会保留已有的值。
+  // DOM 兜底路径的帖子归属，三级提取：
+  //   1) 自元素起在所在容器（文章卡片/浮层/网格单元）内找最近的 /p|/reel 帖子链接——
+  //      覆盖手机版网格「<a> 直接包裹图片、无 article 容器」的结构；
+  //   2) 无容器（手机全屏看帖/Reel）时，页面 URL 直指帖子即整页归属；
+  //   3) 找不到则放弃，交由「未归类」兜底。DOM 拿不到发帖时间，ts/caption 留空，
+  //      服务端归并时若 Fiber 路径已补全会保留已有的值。
   function postFromContainer(el) {
     try {
-      const c = el.closest('article') || el.closest('div[role="dialog"]') || el.closest('li');
-      if (!c) return null;
-      const a = c.querySelector('a[href*="/p/"], a[href*="/reel/"]');
-      const m = a && (a.getAttribute('href') || '').match(/\/(?:p|reel)\/([A-Za-z0-9_-]+)/);
-      return m ? { id: m[1], ts: null, caption: null } : null;
-    } catch { return null; }
+      const boundary = el.closest && el.closest('article, div[role="dialog"], li');
+      let cur = el;
+      for (let i = 0; i < 8 && cur; i++) {
+        let a = cur.tagName === 'A' ? cur : null;
+        if (!a && cur.querySelector) a = cur.querySelector('a[href*="/p/"], a[href*="/reel/"]');
+        const m = a && (a.getAttribute('href') || '').match(/\/(?:p|reel)\/([A-Za-z0-9_-]+)/);
+        if (m) return { id: m[1], ts: null, caption: null };
+        if (boundary && cur === boundary) break; // 不越出所属卡片，防止错认别的帖子的链接
+        cur = cur.parentElement;
+      }
+      const isDialog = boundary && boundary.getAttribute && boundary.getAttribute('role') === 'dialog';
+      if (!boundary || isDialog) {
+        const mu = location.pathname.match(/\/(?:p|reel|reels)\/([A-Za-z0-9_-]+)/);
+        if (mu) return { id: mu[1], ts: null, caption: null };
+      }
+    } catch { }
+    return null;
   }
 
   function harvestVideo(v, pending, username) {
