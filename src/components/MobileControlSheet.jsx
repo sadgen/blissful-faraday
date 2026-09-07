@@ -4,6 +4,7 @@ import {
   RefreshCw, Trash2, Shuffle, ZoomIn, ZoomOut, Check, History, Shield
 } from 'lucide-react';
 import SecurityCenter from './SecurityCenter';
+import AccountList from './AccountList';
 
 export default function MobileControlSheet({
   isOpen,
@@ -54,6 +55,8 @@ export default function MobileControlSheet({
   setRecentPostDays,
   recentDlDays,
   setRecentDlDays,
+  accountFilter = '',
+  onSelectAccount,
 }) {
   const [isHistoryOpen, setIsHistoryOpen] = React.useState(false);
   const historyRef = React.useRef(null);
@@ -301,6 +304,24 @@ export default function MobileControlSheet({
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Instagram 账号过滤 */}
+              <div className="mobile-sheet-section">
+                <div className="mobile-sheet-section-title">
+                  📋 Instagram 账号
+                </div>
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: 8 }}>
+                  点击账号，所有分屏只播放该账号的帖子（再点一次取消）
+                </div>
+                <AccountList
+                  accountFilter={accountFilter}
+                  onSelectAccount={(u) => {
+                    onSelectAccount && onSelectAccount(u);
+                    onClose();
+                  }}
+                  maxHeight={260}
+                />
               </div>
 
               {/* Time Range Filters */}

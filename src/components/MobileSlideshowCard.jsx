@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, X, ChevronRight, ChevronLeft, Maximize2, Minimize2, Settings, Trash2, Shuffle, Images } from 'lucide-react';
-import { isVideoFile, getImageDimensions, prettyCollectionName } from '../utils/imageHelpers';
+import { isVideoFile, getImageDimensions, prettyCollectionName, accountOf } from '../utils/imageHelpers';
 
 export default function MobileSlideshowCard({
   tileId,
@@ -26,6 +26,8 @@ export default function MobileSlideshowCard({
   fetchCollections,
   onRequestNextCollection,
   onQueueDelete,
+  accountFilter = '',
+  onSelectAccount,
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [images, setImages] = useState([]);
@@ -1007,7 +1009,7 @@ export default function MobileSlideshowCard({
         </div>
 
         {/* Collection Name badge */}
-        <div 
+        <div
           className="mobile-card-folder-badge"
           onTouchStart={(e) => e.stopPropagation()}
           onTouchMove={(e) => e.stopPropagation()}
@@ -1019,7 +1021,38 @@ export default function MobileSlideshowCard({
             }
           }}
         >
-          📁 {prettyCollectionName(currentCollName)}
+          {(() => {
+            const igAccount = accountOf(currentCollName);
+            // IG 内容：账号名可点击 → 只播放该账号；其余部分保持原 onTitleClick 行为
+            if (igAccount && typeof onSelectAccount === 'function') {
+              const active = accountFilter === igAccount;
+              const rest = prettyCollectionName(currentCollName).replace(`@${igAccount}`, '');
+              return (
+                <>
+                  📂{' '}
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectAccount(igAccount);
+                    }}
+                    title={active ? `取消只看 @${igAccount}` : `只播放 @${igAccount} 的帖子`}
+                    style={{
+                      cursor: 'pointer',
+                      textDecoration: 'underline dotted',
+                      textUnderlineOffset: 2,
+                      textDecorationColor: active ? '#d8b4fe' : 'rgba(255,255,255,0.4)',
+                      color: active ? '#d8b4fe' : 'inherit',
+                      fontWeight: active ? 'bold' : 'inherit',
+                    }}
+                  >
+                    @{igAccount}{active ? ' ✓' : ''}
+                  </span>
+                  {rest}
+                </>
+              );
+            }
+            return <>📁 {prettyCollectionName(currentCollName)}</>;
+          })()}
         </div>
 
         {/* ---- Overlay Controls (visible when showOverlay is true) ---- */}
@@ -1042,9 +1075,41 @@ export default function MobileSlideshowCard({
               <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ width: 5, height: 5, borderRadius: '50%', background: isPlaying ? '#10b981' : '#f59e0b', flexShrink: 0 }} />
                 <div style={{ minWidth: 0, lineHeight: 1.1 }}>
-                  <div style={{ fontSize: '0.7rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#fff' }}>
-                    {prettyCollectionName(currentCollName)}
-                  </div>
+                  {(() => {
+                    const igAccount = accountOf(currentCollName);
+                    const full = prettyCollectionName(currentCollName);
+                    if (!(igAccount && typeof onSelectAccount === 'function')) {
+                      return (
+                        <div style={{ fontSize: '0.7rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#fff' }}>
+                          {full}
+                        </div>
+                      );
+                    }
+                    const active = accountFilter === igAccount;
+                    const rest = full.replace(`@${igAccount}`, '');
+                    return (
+                      <div style={{ fontSize: '0.7rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#fff' }}>
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectAccount(igAccount);
+                          }}
+                          title={active ? `取消只看 @${igAccount}` : `只播放 @${igAccount} 的帖子`}
+                          style={{
+                            cursor: 'pointer',
+                            textDecoration: 'underline dotted',
+                            textUnderlineOffset: 2,
+                            textDecorationColor: active ? '#d8b4fe' : 'rgba(255,255,255,0.4)',
+                            color: active ? '#d8b4fe' : '#fff',
+                            fontWeight: active ? 'bold' : 'inherit',
+                          }}
+                        >
+                          @{igAccount}{active ? ' ✓' : ''}
+                        </span>
+                        {rest}
+                      </div>
+                    );
+                  })()}
                   {(() => {
                     const pinfo = postIndex && images[activeIdx] ? postIndex.get(images[activeIdx]) : null;
                     const secondLine = pinfo

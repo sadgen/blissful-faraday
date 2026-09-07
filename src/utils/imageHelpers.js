@@ -19,6 +19,14 @@ export function prettyCollectionName(name) {
   return `@${user} · 帖 ${postId}`;
 }
 
+// 从图集名提取 Instagram 账号名；非 IG 复合图集（普通文件夹）返回 null。
+// 仅 user::postId 形态的内容才提供"只看该账号"入口。
+export function accountOf(collectionName) {
+  if (typeof collectionName !== 'string' || !collectionName.includes('::')) return null;
+  const user = collectionName.split('::')[0];
+  return /^[A-Za-z0-9._]{1,30}$/.test(user) ? user : null;
+}
+
 export function isImageFile(filename) {
   if (!filename) return false;
   const lower = filename.toLowerCase();

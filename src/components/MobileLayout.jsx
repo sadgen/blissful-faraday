@@ -160,6 +160,8 @@ export default function MobileLayout({
   setRecentPostDays,
   recentDlDays,
   setRecentDlDays,
+  accountFilter = '',
+  onSelectAccount,
   onQueueDelete,
 }) {
   const [showZoomSlider, setShowZoomSlider] = useState(false);
@@ -389,6 +391,8 @@ export default function MobileLayout({
                     fetchCollections={fetchCollections}
                     onRequestNextCollection={consumeNext}
                     onQueueDelete={onQueueDelete}
+                    accountFilter={accountFilter}
+                    onSelectAccount={onSelectAccount}
                   />
                 </ErrorBoundary>
               ))}
@@ -493,6 +497,8 @@ export default function MobileLayout({
         setRecentPostDays={setRecentPostDays}
         recentDlDays={recentDlDays}
         setRecentDlDays={setRecentDlDays}
+        accountFilter={accountFilter}
+        onSelectAccount={onSelectAccount}
       />
 
       {/* 5. Floating Vertical Zoom Slider on Right Screen Edge */}

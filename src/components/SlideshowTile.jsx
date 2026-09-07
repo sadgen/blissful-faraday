@@ -3,7 +3,7 @@ import {
   Play, Pause, ChevronRight, ChevronLeft,
   Maximize2, Minimize2, Settings, Shuffle, HelpCircle, Trash2, Images
 } from 'lucide-react';
-import { isVideoFile, prettyCollectionName } from '../utils/imageHelpers';
+import { isVideoFile, prettyCollectionName, accountOf } from '../utils/imageHelpers';
 import useImagePreloader from '../hooks/useImagePreloader';
 import useSlideshowPlayback from '../hooks/useSlideshowPlayback';
 import useTileDrag from '../hooks/useTileDrag';
@@ -34,6 +34,8 @@ export default function SlideshowTile({
   fetchCollections,
   onRequestNextCollection,
   onQueueDelete,
+  accountFilter = '',
+  onSelectAccount,
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [isMaximized, setIsMaximized] = useState(false);
@@ -496,9 +498,36 @@ export default function SlideshowTile({
           <div className="tile-title" style={{ flex: 1, minWidth: 0 }}>
             <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: isPlaying ? '#10b981' : '#f59e0b', flexShrink: 0 }} />
             <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.2 }}>
-              <span style={{ fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                @{collectionInfo?.username || currentCollName || '选择图片集'}
-              </span>
+              {(() => {
+                const igAccount = accountOf(currentCollName);
+                const label = `@${collectionInfo?.username || (igAccount || currentCollName) || '选择图片集'}`;
+                // 仅 IG 复合图集（user::postId）提供"只看该账号"点击入口；普通文件夹保持纯文本
+                if (!igAccount || typeof onSelectAccount !== 'function') {
+                  return (
+                    <span style={{ fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {label}
+                    </span>
+                  );
+                }
+                const active = accountFilter === igAccount;
+                return (
+                  <span
+                    onClick={(e) => { e.stopPropagation(); onSelectAccount(igAccount); }}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    title={active ? `取消只看 @${igAccount}` : `只播放 @${igAccount} 的帖子`}
+                    style={{
+                      fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                      cursor: 'pointer',
+                      textDecoration: 'underline dotted',
+                      textUnderlineOffset: 3,
+                      textDecorationColor: active ? '#d8b4fe' : 'rgba(255,255,255,0.35)',
+                      color: active ? '#d8b4fe' : 'inherit',
+                    }}
+                  >
+                    {label}{active ? ' ✓' : ''}
+                  </span>
+                );
+              })()}
               {activePostInfo ? (
                 <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   第 {activePostInfo.postNo}/{activePostInfo.totalPosts} 帖{activePostInfo.caption ? ` · ${activePostInfo.caption}` : ''}

@@ -1530,6 +1530,81 @@ export function createApiHandler() {
       return;
     }
 
+    // ── GET /api/instagram/accounts ─────────────────────────────────────
+    // 账号清单：扫描 instagram-scraped 下所有账号目录，汇总帖子数/媒体数/
+    // 未归类数/最近发帖时间，供前端账号面板按"最近更新/帖子数"排序与点击过滤。
+    if (url.pathname === '/api/instagram/accounts') {
+      try {
+        const igRoot = path.resolve(INSTAGRAM_SCRAPE_DIR);
+        const exts = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.mp4', '.webm']);
+        const accounts = [];
+        let entries = [];
+        try { entries = fs.readdirSync(igRoot, { withFileTypes: true }); } catch {}
+        for (const entry of entries) {
+          if (!entry.isDirectory() || !isSafeAccountName(entry.name)) continue;
+          const accountDir = path.join(igRoot, entry.name);
+          let dirMtime = 0;
+          let mediaCount = 0;
+          try {
+            const files = fs.readdirSync(accountDir).filter(
+              f => !f.startsWith('.') && exts.has(path.extname(f).toLowerCase())
+            );
+            mediaCount = files.length;
+            dirMtime = fs.statSync(accountDir).mtimeMs;
+          } catch { continue; }
+          if (mediaCount === 0) continue;
+
+          let postCount = 0;
+          let latestPostTs = 0;
+          let inPosts = 0;
+          try {
+            const manifestPath = path.join(accountDir, '.posts.json');
+            if (fs.existsSync(manifestPath)) {
+              const d = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+              if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) {
+                for (const p of Object.values(d.posts)) {
+                  if (!Array.isArray(p.media) || !p.media.length) continue;
+                  postCount++;
+                  inPosts += p.media.length;
+                  if (Number.isFinite(p.ts) && p.ts > latestPostTs) latestPostTs = p.ts;
+                }
+              }
+            }
+          } catch {}
+
+          let fullName = null;
+          try {
+            const infoPath = path.join(accountDir, '.collection-info.json');
+            if (fs.existsSync(infoPath)) {
+              const info = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+              if (info && typeof info.full_name === 'string' && info.full_name.trim()) {
+                fullName = info.full_name.trim();
+              }
+            }
+          } catch {}
+
+          accounts.push({
+            username: entry.name,
+            fullName,
+            postCount,
+            mediaCount,
+            unsortedCount: Math.max(0, mediaCount - inPosts),
+            latestPostTs: latestPostTs || null,
+            mtime: dirMtime,
+          });
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+        });
+        res.end(JSON.stringify({ accounts }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
     // ── POST /api/instagram/harvest ─────────────────────────────────────
     // Body: { username, items: [{ url, type?, alt? }] }
     // url 为页面上实际加载的地址；alt 为脚本按 IG CDN 规律还原的全尺寸候选地址，

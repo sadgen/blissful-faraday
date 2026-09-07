@@ -79,6 +79,8 @@ export default function DesktopLayout({
   setRecentPostDays,
   recentDlDays,
   setRecentDlDays,
+  accountFilter = '',
+  onSelectAccount,
   dirResetKey,
   onQueueDelete,
 }) {
@@ -299,6 +301,8 @@ export default function DesktopLayout({
                     fetchCollections={fetchCollections}
                     onRequestNextCollection={consumeNext}
                     onQueueDelete={onQueueDelete}
+                    accountFilter={accountFilter}
+                    onSelectAccount={onSelectAccount}
                   />
                 </ErrorBoundary>
               </div>
@@ -388,6 +392,8 @@ export default function DesktopLayout({
           setRecentPostDays={setRecentPostDays}
           recentDlDays={recentDlDays}
           setRecentDlDays={setRecentDlDays}
+          accountFilter={accountFilter}
+          onSelectAccount={onSelectAccount}
         />
       )}
 

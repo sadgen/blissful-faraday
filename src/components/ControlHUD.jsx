@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
-import { Play, Pause, Shuffle, Settings, Columns, Image, Sliders, ChevronUp, ChevronDown, Sparkles, ZoomIn, ZoomOut, FolderOpen, ArrowUpDown } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Play, Pause, Shuffle, Settings, Columns, Image, Sliders, ChevronUp, ChevronDown, Sparkles, ZoomIn, ZoomOut, FolderOpen, ArrowUpDown, Instagram } from 'lucide-react';
 import FaradaySuiteMenu from './FaradaySuiteMenu';
+import AccountList from './AccountList';
 
 // Allowed tile counts
 const ALLOWED_TILE_COUNTS = [1, 3, 5, 12];
@@ -39,8 +40,24 @@ export default function ControlHUD({
   setRecentPostDays,
   recentDlDays,
   setRecentDlDays,
+  accountFilter = '',
+  onSelectAccount,
 }) {
   const [isHovered, setIsHovered] = useState(false);
+  const [isAccountsOpen, setIsAccountsOpen] = useState(false);
+  const accountsRef = useRef(null);
+
+  // 点击面板外部关闭账号清单
+  useEffect(() => {
+    if (!isAccountsOpen) return;
+    const handleClickOutside = (e) => {
+      if (accountsRef.current && !accountsRef.current.contains(e.target)) {
+        setIsAccountsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isAccountsOpen]);
 
   const speedInSeconds = globalSpeed / 1000;
 
@@ -306,6 +323,78 @@ export default function ControlHUD({
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Instagram 账号过滤 */}
+        <div className="hud-section hud-section-compact" style={{ position: 'relative' }}>
+          <span className="hud-label" style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', fontSize: '0.65rem' }}>
+            <Instagram size={11} /> 账号
+          </span>
+          <button
+            onClick={() => setIsAccountsOpen(v => !v)}
+            title={accountFilter ? `当前只看 @${accountFilter}，点击管理` : '选择账号，只播放它的帖子'}
+            style={{
+              background: (isAccountsOpen || accountFilter) ? 'var(--accent-purple)' : 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              color: '#fff',
+              fontSize: '0.6rem',
+              padding: '3px 8px',
+              borderRadius: '5px',
+              cursor: 'pointer',
+              fontWeight: (isAccountsOpen || accountFilter) ? 'bold' : 'normal',
+              maxWidth: '110px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {accountFilter ? `@${accountFilter}` : '全部'}
+          </button>
+
+          {/* 账号清单弹层：固定定位在 HUD 上方居中，避免溢出屏幕边缘 */}
+          {isAccountsOpen && (
+            <div
+              ref={accountsRef}
+              className="glass-panel"
+              style={{
+                position: 'fixed',
+                bottom: 62,
+                left: '50%',
+                transform: 'translateX(-50%)',
+                width: 320,
+                maxHeight: '62vh',
+                overflowY: 'auto',
+                zIndex: 40,
+                padding: 12,
+                boxShadow: '0 10px 30px rgba(0,0,0,0.6)',
+                border: '1px solid rgba(255,255,255,0.12)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Instagram size={13} style={{ color: '#a855f7' }} />
+                  Instagram 账号
+                </span>
+                <button
+                  type="button"
+                  className="tile-mini-btn"
+                  onClick={() => setIsAccountsOpen(false)}
+                  title="关闭"
+                >
+                  <ChevronDown size={14} />
+                </button>
+              </div>
+              <AccountList
+                dense
+                accountFilter={accountFilter}
+                onSelectAccount={(u) => {
+                  onSelectAccount && onSelectAccount(u);
+                  setIsAccountsOpen(false);
+                }}
+                maxHeight="46vh"
+              />
+            </div>
+          )}
         </div>
 
         {/* Zoom Control */}

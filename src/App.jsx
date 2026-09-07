@@ -94,6 +94,8 @@ export default function App() {
   // 时间范围过滤（0 = 全部）：发布按帖子 taken_at，下载按文件落盘时间
   const [recentPostDays, setRecentPostDays] = useState(savedConfig?.recentPostDays || 0);
   const [recentDlDays, setRecentDlDays] = useState(savedConfig?.recentDlDays || 0);
+  // 账号过滤：只播放某个 Instagram 账号的帖子（'' = 全部图集）
+  const [accountFilter, setAccountFilter] = useState(savedConfig?.accountFilter || '');
 
   // Track page visibility to pause/resume slideshow when tab is inactive/active
   const [isDocumentVisible, setIsDocumentVisible] = useState(document.visibilityState === 'visible');
@@ -266,6 +268,12 @@ export default function App() {
       const nextScanDirectory = data.scanDirectory || '';
       const nextCollections = await expandInstagramPosts(data.collections || []);
 
+      // 过滤目标账号已被删除/清空时自动回落到全部图集
+      if (accountFilter &&
+          !nextCollections.some(c => c.name === accountFilter || String(c.name || '').startsWith(`${accountFilter}::`))) {
+        setAccountFilter('');
+      }
+
       setRawCollections(nextCollections);
       setScanDirectory(nextScanDirectory);
       setInputScanDir(nextScanDirectory);
@@ -412,24 +420,29 @@ export default function App() {
   // 1. Process, sort and map collections
   const collections = useMemo(() => {
     if (!rawCollections || rawCollections.length === 0) return [];
-    
+
     const items = [...rawCollections];
-    
+
+    // 账号过滤：只保留该账号的帖子图集（user::postId / user::__unsorted / 无清单账号本体）
+    const filtered = accountFilter
+      ? items.filter(c => c.name === accountFilter || String(c.name || '').startsWith(`${accountFilter}::`))
+      : items;
+
     let result;
     if (sortMethod === 'name') {
-      result = items.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+      result = filtered.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
     } else if (sortMethod === 'date') {
-      result = items.sort((a, b) => b.mtime - a.mtime);
+      result = filtered.sort((a, b) => b.mtime - a.mtime);
     } else if (sortMethod === 'random') {
-      let currentIndex = items.length, randomIndex;
+      let currentIndex = filtered.length, randomIndex;
       while (currentIndex !== 0) {
         randomIndex = Math.floor(Math.random() * currentIndex);
         currentIndex--;
-        [items[currentIndex], items[randomIndex]] = [items[randomIndex], items[currentIndex]];
+        [filtered[currentIndex], filtered[randomIndex]] = [filtered[randomIndex], filtered[currentIndex]];
       }
-      result = items;
+      result = filtered;
     } else {
-      result = items;
+      result = filtered;
     }
     
     const seen = new Set();
@@ -443,7 +456,20 @@ export default function App() {
     });
     
     return unique.map(item => item.name);
-  }, [rawCollections, sortMethod, randomTrigger]);
+  }, [rawCollections, sortMethod, randomTrigger, accountFilter]);
+
+  // 账号过滤切换：重置全部窗口为过滤后的前 N 个图集（等效一次目录切换）
+  useEffect(() => {
+    setDirResetKey(k => k + 1);
+    setDisplayedCollections(collections.slice(0, tileCount || collections.length));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountFilter]);
+
+  // 点击账号名：同账号再点一次取消过滤
+  const handleSelectAccount = useCallback((username) => {
+    if (!username) return;
+    setAccountFilter(prev => (prev === username ? '' : username));
+  }, []);
 
   useEffect(() => {
     fetchCollections();
@@ -486,14 +512,15 @@ export default function App() {
       videoSpeed,
       imageSort,
       recentPostDays,
-      recentDlDays
+      recentDlDays,
+      accountFilter
     };
     try {
       localStorage.setItem('blissfulFaradayConfig', JSON.stringify(config));
     } catch (err) {
       console.warn('Failed to save config:', err);
     }
-  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, isSyncMode, sortMethod, isAutoTiling, zoomScale, isHUDpinned, videoSpeed, imageSort, recentPostDays, recentDlDays]);
+  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, isSyncMode, sortMethod, isAutoTiling, zoomScale, isHUDpinned, videoSpeed, imageSort, recentPostDays, recentDlDays, accountFilter]);
 
   // 时间范围过滤变化时重新拉取图集列表
   useEffect(() => {
@@ -1042,6 +1069,9 @@ export default function App() {
           setRecentPostDays={setRecentPostDays}
           recentDlDays={recentDlDays}
           setRecentDlDays={setRecentDlDays}
+          accountFilter={accountFilter}
+          setAccountFilter={setAccountFilter}
+          onSelectAccount={handleSelectAccount}
           onQueueDelete={queueDelete}
         />
         <UndoToast toasts={toasts} />
@@ -1122,6 +1152,9 @@ export default function App() {
       setRecentPostDays={setRecentPostDays}
       recentDlDays={recentDlDays}
       setRecentDlDays={setRecentDlDays}
+      accountFilter={accountFilter}
+      setAccountFilter={setAccountFilter}
+      onSelectAccount={handleSelectAccount}
       onQueueDelete={queueDelete}
     />
     <UndoToast toasts={toasts} />
