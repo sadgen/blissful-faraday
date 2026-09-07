@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Pause, Shuffle, Settings, Columns, Image, Sliders, ChevronUp, ChevronDown, Sparkles, ZoomIn, ZoomOut, FolderOpen, ArrowUpDown, Instagram } from 'lucide-react';
+import { Play, Pause, Shuffle, Settings, Columns, Image, Sliders, ChevronDown, Sparkles, ZoomIn, ZoomOut, FolderOpen, ArrowUpDown, Instagram } from 'lucide-react';
 import FaradaySuiteMenu from './FaradaySuiteMenu';
 import AccountList from './AccountList';
 
@@ -30,8 +30,6 @@ export default function ControlHUD({
   onZoomIn,
   onZoomOut,
   zoomSliderRef,
-  isHUDpinned,
-  setIsHUDpinned,
   videoSpeed,
   setVideoSpeed,
   imageSort,
@@ -43,7 +41,6 @@ export default function ControlHUD({
   accountFilter = '',
   onSelectAccount,
 }) {
-  const [isHovered, setIsHovered] = useState(false);
   const [isAccountsOpen, setIsAccountsOpen] = useState(false);
   const accountsRef = useRef(null);
 
@@ -63,12 +60,8 @@ export default function ControlHUD({
 
   return (
     <>
-      {/* Main Control Bar - Full width at bottom */}
-      <div 
-        className={`glass-panel hud-container ${(!isHUDpinned && !isHovered) ? 'hidden' : ''}`}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-      >
+      {/* Main Control Bar - Full width at bottom (常驻显示) */}
+      <div className="glass-panel hud-container">
         {/* Brand/Status Info */}
         <div className="hud-section hud-section-compact">
           <div className="hud-title-brand" style={{ fontSize: '0.9rem' }}>
@@ -490,19 +483,6 @@ export default function ControlHUD({
             <Settings size={14} />
             <span style={{ fontSize: '0.7rem' }}>设置</span>
           </button>
-
-          {/* Pin control */}
-          <div 
-            style={{ 
-              cursor: 'pointer',
-              color: isHUDpinned ? 'var(--accent-purple)' : 'var(--text-muted)',
-              display: 'flex',
-              alignItems: 'center'
-            }}
-            onClick={() => setIsHUDpinned(!isHUDpinned)}
-          >
-            {isHUDpinned ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-          </div>
         </div>
       </div>
     </>

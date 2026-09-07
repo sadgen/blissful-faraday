@@ -388,10 +388,7 @@ export default function App() {
   
   // Zoom state for the scale slider
   const [zoomScale, setZoomScale] = useState(savedConfig?.zoomScale || 1);
-  
-  // HUD pinned state (whether the HUD bar is always visible)
-  const [isHUDpinned, setIsHUDpinned] = useState(savedConfig?.isHUDpinned !== undefined ? savedConfig.isHUDpinned : true);
-  
+
   // Ref for zoom slider container to capture wheel events
   const zoomSliderRef = useRef(null);
 
@@ -508,7 +505,6 @@ export default function App() {
       sortMethod,
       isAutoTiling,
       zoomScale,
-      isHUDpinned,
       videoSpeed,
       imageSort,
       recentPostDays,
@@ -520,7 +516,7 @@ export default function App() {
     } catch (err) {
       console.warn('Failed to save config:', err);
     }
-  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, isSyncMode, sortMethod, isAutoTiling, zoomScale, isHUDpinned, videoSpeed, imageSort, recentPostDays, recentDlDays, accountFilter]);
+  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, isSyncMode, sortMethod, isAutoTiling, zoomScale, videoSpeed, imageSort, recentPostDays, recentDlDays, accountFilter]);
 
   // 时间范围过滤变化时重新拉取图集列表
   useEffect(() => {
@@ -1121,8 +1117,6 @@ export default function App() {
       zoomIn={zoomIn}
       zoomOut={zoomOut}
       zoomSliderRef={zoomSliderRef}
-      isHUDpinned={isHUDpinned}
-      setIsHUDpinned={setIsHUDpinned}
       inputScanDir={inputScanDir}
       setInputScanDir={setInputScanDir}
       handleSaveDirectory={handleSaveDirectory}

@@ -45,8 +45,6 @@ export default function DesktopLayout({
   zoomIn,
   zoomOut,
   zoomSliderRef,
-  isHUDpinned,
-  setIsHUDpinned,
   inputScanDir,
   setInputScanDir,
   handleSaveDirectory,
@@ -380,8 +378,6 @@ export default function DesktopLayout({
           onZoomIn={zoomIn}
           onZoomOut={zoomOut}
           zoomSliderRef={zoomSliderRef}
-          isHUDpinned={isHUDpinned}
-          setIsHUDpinned={setIsHUDpinned}
           isSyncMode={isSyncMode}
           setIsSyncMode={setIsSyncMode}
           videoSpeed={videoSpeed}
