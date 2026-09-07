@@ -412,7 +412,10 @@ export default function MobileSlideshowCard({
   const duration = globalSpeed / localSpeedMult;
   // Single-image collections still auto-advance as long as another collection exists to rotate into
   const hasNextTarget = images.length > 1 || collections.length > 1;
-  const isPlaying = globalIsPlaying && localIsPlaying && images.length > 0 && hasNextTarget;
+  // 当前是视频时暂停计时切换，由视频 onEnded 播完再推进（与桌面一致，长视频不被掐断）
+  const activeName = images[activeIdx];
+  const isCurrentVideo = !!activeName && (isVideoFile(activeName) || videoFileNames.has(activeName));
+  const isPlaying = globalIsPlaying && localIsPlaying && images.length > 0 && hasNextTarget && !isCurrentVideo;
 
   const resetProgressBar = () => {
     setProgressBarReset(true);
