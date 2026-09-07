@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.3.4
+// @version      1.3.5
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。多图贴文秒级全量提取 + 个人主页旁听接口 JSON 全量采集多图 + 帖子结构（shortcode/时间/caption）随媒体回传 + 网页端多图横向并排免点击预览。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -1157,26 +1157,46 @@
   ].join(';');
   document.documentElement.appendChild(badge);
 
+  // 触屏设备上徽章会挡住 Instagram 底部导航：显示 5 秒后自动淡出（含指针事件），
+  // 有新动态（文本变化）时自动浮现；桌面设备保持常驻。
+  const isTouchDevice = typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: coarse)').matches;
+  let badgeHideTimer = null;
+  function showBadge(text) {
+    badge.textContent = text;
+    badge.style.opacity = '1';
+    badge.style.pointerEvents = 'auto';
+    if (badgeHideTimer) clearTimeout(badgeHideTimer);
+    if (isTouchDevice) {
+      badgeHideTimer = setTimeout(() => {
+        badge.style.opacity = '0';
+        badge.style.pointerEvents = 'none';
+      }, 5000);
+    }
+  }
+  function setBadge(text) {
+    if (badge.textContent === text) return; // 内容未变化时不重置自动隐藏计时
+    showBadge(text);
+  }
   let flashTimer = null;
   function updateBadge(username, pendingCount, added) {
     if (flashTimer) return; // 闪现消息优先
     if (!username) {
       if (pendingCount > 0) {
-        badge.textContent = `📥 时间线 · 待同步 ${pendingCount}`;
+        setBadge(`📥 时间线 · 待同步 ${pendingCount}`);
       } else {
         let host = GALLERY();
         try { host = new URL(GALLERY()).host; } catch { }
-        badge.textContent = `📥 待机 → ${host}（刷时间线或进主页自动采集）`;
+        setBadge(`📥 待机 → ${host}（刷时间线或进主页自动采集）`);
       }
       return;
     }
-    badge.textContent = `📥 @${username}` +
+    setBadge(`📥 @${username}` +
       (pendingCount ? ` 待同步 ${pendingCount}` : ' 已全部同步') +
-      (added ? ` (+${added})` : '');
+      (added ? ` (+${added})` : ''));
   }
   function flashBadge(text) {
-    badge.textContent = '📥 ' + text;
-    badge.style.opacity = '1';
+    showBadge('📥 ' + text);
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => { flashTimer = null; }, 4000);
   }
