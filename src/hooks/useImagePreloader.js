@@ -58,7 +58,11 @@ export default function useImagePreloader({
   useEffect(() => { imagesCollRef.current = imagesColl; }, [imagesColl]);
   // C4: separate controllers — directory switch vs slide advance must not abort each other
   const abortImagesRef = useRef(null);   // /api/collection/images (directory switch)
-  const abortPreloadRef = useRef(null);  // /api/image range fetch (slide advance)
+  // 在途的下一张推进：{ key: `${coll}:${name}`, controller }。
+  // 旧实现每次 tick 都 abort 上一 tick 的在途请求再重发——单次加载一旦超过滑动间隔
+  // （多窗口+视频挤占连接池时常见），就永远差一点完成 → 窗口永久冻结。
+  // 现在同 key 在途即等待，完成后的 tick 走缓存路径。
+  const pendingAdvanceRef = useRef(null);
   // C3: unified cleanup for outgoingIdx timers (unmount-safe)
   const outgoingTimerRef = useRef(null);
   const clearOutgoingTimer = useCallback(() => {
@@ -178,12 +182,17 @@ export default function useImagePreloader({
     }
 
     const fetchImages = async () => {
+      // 15s 硬超时：连接挂死时目录请求永不返回会让 isLoadingRef 永远为 true，
+      // 推进守卫会把窗口永久冻住
+      let timedOut = false;
+      let timeoutId = null;
       try {
         applyLoadingState(true);
         setLoadError('');
         if (abortImagesRef.current) abortImagesRef.current.abort();
         const controller = new AbortController();
         abortImagesRef.current = controller;
+        timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, 15000);
         const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}&sort=${imageSort}`, { signal: controller.signal });
         if (!res.ok) throw new Error(`加载目录失败: ${res.statusText}`);
         const contentType = res.headers.get('content-type');
@@ -233,6 +242,7 @@ export default function useImagePreloader({
           const firstIsVideo = isVideoFile(newImages[0]);
 
           const applyImages = () => {
+            if (timeoutId) clearTimeout(timeoutId);
             // 换集瞬间旧容器整体卸载：先把旧集当前帧留作垫底，盖住新 img 挂载解码空档
             const prevName = imagesRef.current[activeIdxRef.current];
             const prevColl = imagesCollRef.current;
@@ -260,11 +270,16 @@ export default function useImagePreloader({
           } else {
             const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(newImages[0])}`;
             const preloadImg = new Image();
-            preloadImg.onload = applyImages;
-            preloadImg.onerror = applyImages;
+            // 首图 15s 仍未就绪就直接切换（宁可显示加载中的图也不冻结窗口）
+            let settled = false;
+            const applyOnce = () => { if (!settled) { settled = true; applyImages(); } };
+            const imgFallback = setTimeout(() => applyOnce(), 15000);
+            preloadImg.onload = () => { clearTimeout(imgFallback); applyOnce(); };
+            preloadImg.onerror = () => { clearTimeout(imgFallback); applyOnce(); };
             preloadImg.src = imgUrl;
           }
         } else {
+          if (timeoutId) clearTimeout(timeoutId);
           setImages([]);
           setImagesColl(currentCollName);
           setActiveIdx(0);
@@ -272,7 +287,15 @@ export default function useImagePreloader({
           applyLoadingState(false);
         }
       } catch (err) {
-        if (err.name === 'AbortError') return; // 正常中断，不污染 loadError
+        if (err.name === 'AbortError') {
+          // 超时导致的中断要走出错恢复（否则 isLoading 永远为 true 冻结窗口）；
+          // 正常切集中断保持原样（新集流程已接管）
+          if (timedOut) {
+            setLoadError('加载超时');
+            applyLoadingState(false);
+          }
+          return;
+        }
         console.error(err);
         setLoadError(err.message);
         applyLoadingState(false);
@@ -282,6 +305,11 @@ export default function useImagePreloader({
 
     return () => {
       if (abortImagesRef.current) abortImagesRef.current.abort();
+      // 在途推进的 nextIdx 属于旧集：换集即作废，防止其完成时把旧下标套到新集上
+      if (pendingAdvanceRef.current) {
+        try { pendingAdvanceRef.current.controller.abort(); } catch {}
+        pendingAdvanceRef.current = null;
+      }
     };
   }, [currentCollName]);
 
@@ -317,6 +345,7 @@ export default function useImagePreloader({
 
     // For video files: skip image preloading, just switch immediately
     if (isVideoFile(imgName)) {
+      pendingAdvanceRef.current = null;
       if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
       scheduleOutgoingClear();
@@ -328,8 +357,7 @@ export default function useImagePreloader({
     const cached = preloadCacheRef.current.get(cacheKey);
 
     if (cached && cached.img && cached.img.complete) {
-      preloadCacheRef.current.delete(cacheKey);
-      preloadCacheRef.current.set(cacheKey, cached);
+      pendingAdvanceRef.current = null;
       setTileAspectRatio(cached.aspectRatio || (cached.img.width / cached.img.height));
       if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
@@ -338,10 +366,37 @@ export default function useImagePreloader({
       return;
     }
 
+    // 同一张已在途：不重发、不中断，等它落缓存后由下一个 tick 切换
+    if (pendingAdvanceRef.current && pendingAdvanceRef.current.key === cacheKey) return;
+
     const imgUrl = `/api/image?collection=${encodeURIComponent(collName)}&name=${encodeURIComponent(imgName)}`;
-    if (abortPreloadRef.current) abortPreloadRef.current.abort();
     const controller = new AbortController();
-    abortPreloadRef.current = controller;
+    pendingAdvanceRef.current = { key: cacheKey, controller };
+    const myKey = cacheKey;
+
+    // 图片就绪后的切换动作。图片本体始终写入缓存（对后续总有价值），
+    // 但状态更新只在本次推进仍是最新一次时执行（防旧集响应串号）
+    const applySwitch = (img, ratio) => {
+      const isLatest = pendingAdvanceRef.current && pendingAdvanceRef.current.key === myKey;
+      if (isLatest) pendingAdvanceRef.current = null;
+      setCacheLRU(preloadCacheRef.current, cacheKey, { img, aspectRatio: ratio });
+      if (!isLatest) return;
+      setTileAspectRatio(ratio);
+      if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
+      setActiveIdx(nextIdx);
+      scheduleOutgoingClear();
+      preloadImages(nextIdx + 1, PRELOAD_COUNT);
+    };
+    const loadFull = () => {
+      const img = new Image();
+      img.onload = () => applySwitch(img, img.width / img.height);
+      img.onerror = () => {
+        if (pendingAdvanceRef.current && pendingAdvanceRef.current.key === myKey) {
+          pendingAdvanceRef.current = null;
+        }
+      };
+      img.src = imgUrl;
+    };
     fetch(imgUrl, {
       method: 'GET',
       headers: { 'Range': 'bytes=0-65535' },
@@ -353,32 +408,12 @@ export default function useImagePreloader({
       })
       .then(buffer => {
         const dimensions = getImageDimensions(buffer);
-        const aspectRatio = dimensions ? dimensions.width / dimensions.height : null;
-        if (aspectRatio) setTileAspectRatio(aspectRatio);
-        const img = new Image();
-        img.onload = () => {
-          const finalAspectRatio = img.width / img.height;
-          setCacheLRU(preloadCacheRef.current, cacheKey, { img, aspectRatio: finalAspectRatio });
-          setTileAspectRatio(finalAspectRatio);
-          if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
-          setActiveIdx(nextIdx);
-          scheduleOutgoingClear();
-          preloadImages(nextIdx + 1, PRELOAD_COUNT);
-        };
-        img.src = imgUrl;
+        if (dimensions) setTileAspectRatio(dimensions.width / dimensions.height);
+        loadFull();
       })
       .catch(() => {
-        const img = new Image();
-        img.onload = () => {
-          const finalAspectRatio = img.width / img.height;
-          setCacheLRU(preloadCacheRef.current, cacheKey, { img, aspectRatio: finalAspectRatio });
-          setTileAspectRatio(finalAspectRatio);
-          if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
-          setActiveIdx(nextIdx);
-          scheduleOutgoingClear();
-          preloadImages(nextIdx + 1, PRELOAD_COUNT);
-        };
-        img.src = imgUrl;
+        if (controller.signal.aborted) return; // 切集中断：新集的加载流程已接管
+        loadFull();
       });
   }, [preloadImages, scheduleOutgoingClear]);
 
