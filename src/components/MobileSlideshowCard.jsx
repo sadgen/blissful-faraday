@@ -134,6 +134,7 @@ export default function MobileSlideshowCard({
   // Sync refs with state values
   useEffect(() => { activeIdxRef.current = activeIdx; }, [activeIdx]);
   useEffect(() => { imagesRef.current = images; }, [images]);
+  useEffect(() => { imagesCollRef.current = imagesColl; }, [imagesColl]);
   useEffect(() => { currentCollNameRef.current = currentCollName; }, [currentCollName]);
   useEffect(() => { collectionsRef.current = collections; }, [collections]);
   useEffect(() => { displayedCollectionsRef.current = displayedCollections; }, [displayedCollections]);
@@ -143,6 +144,18 @@ export default function MobileSlideshowCard({
   // 同步 ref：advanceSlide 需要在事件瞬间读取加载状态
   const isLoadingRef = useRef(false);
   const applyLoadingState = (v) => { isLoadingRef.current = v; setIsLoadingImages(v); };
+  // 切集边界垫底层：换集那一帧旧容器整体卸载，垫住新图挂载解码空档防闪黑
+  const [holdFrame, setHoldFrame] = useState(null);
+  const holdTimerRef = useRef(null);
+  const showHoldFrame = (coll, name) => {
+    if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+    setHoldFrame({ coll, name });
+    holdTimerRef.current = setTimeout(() => setHoldFrame(null), 2500);
+  };
+  // 在途的下一张推进：同 key 在途即等待，不重复发请求（多窗口挤占连接池时
+  // 重复发+完成乱序会把窗口卡在旧帧上）
+  const pendingAdvanceRef = useRef(null);
+  const imagesCollRef = useRef('');
   const [loadError, setLoadError] = useState('');
 
   // Sync with parent's initialCollectionName prop when it changes
@@ -197,15 +210,22 @@ export default function MobileSlideshowCard({
   useEffect(() => {
     if (!currentCollName) {
       setImages([]);
+      setImagesColl('');
+      setHoldFrame(null);
       setTileAspectRatio(null);
       return;
     }
 
     const fetchImages = async () => {
+      // 15s 硬超时：目录请求挂死会让 isLoadingRef 永远为 true，推进守卫冻结窗口
+      let timedOut = false;
+      let timeoutId = null;
       try {
         applyLoadingState(true);
         setLoadError('');
-        const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}&sort=${imageSort}`);
+        const controller = new AbortController();
+        timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, 15000);
+        const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}&sort=${imageSort}`, { signal: controller.signal });
         if (!res.ok) {
           throw new Error(`加载目录失败: ${res.statusText}`);
         }
@@ -218,7 +238,7 @@ export default function MobileSlideshowCard({
         // Instagram 帖子结构：按 帖子时间倒序 + 帖内 carousel 顺序 重排，普通图集不变
         setPostIndex(null);
         try {
-          const pres = await fetch(`/api/collection/posts?collection=${encodeURIComponent(currentCollName)}`);
+          const pres = await fetch(`/api/collection/posts?collection=${encodeURIComponent(currentCollName)}`, { signal: controller.signal });
           if (pres.ok) {
             const pdata = await pres.json();
             // 帖子图集（user::postId）只含本帖文件，但编号按整账号计（第 x/y 帖）
@@ -253,6 +273,16 @@ export default function MobileSlideshowCard({
 
         // Preload first image before switching (prevents black flash)
         const applyImages = () => {
+          if (timeoutId) clearTimeout(timeoutId);
+          // 换集瞬间旧容器整体卸载：先把旧集当前帧留作垫底，盖住新 img 挂载解码空档
+          const prevName = imagesRef.current[activeIdxRef.current];
+          const prevColl = imagesCollRef.current;
+          if (prevName && prevColl && prevColl !== currentCollName && !isVideoFile(prevName)) {
+            showHoldFrame(prevColl, prevName);
+          } else {
+            if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+            setHoldFrame(null);
+          }
           setImages(newImages);
           setImagesColl(currentCollName);
           let startIdx = 0;
@@ -272,13 +302,24 @@ export default function MobileSlideshowCard({
         if (newImages.length > 0) {
           const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(newImages[0])}`;
           const preloadImg = new Image();
-          preloadImg.onload = applyImages;
-          preloadImg.onerror = applyImages;
+          // 首图 15s 仍未就绪就直接切换（宁可显示加载中的图也不冻结窗口）
+          let settled = false;
+          const applyOnce = () => { if (!settled) { settled = true; applyImages(); } };
+          const imgFallback = setTimeout(() => applyOnce(), 15000);
+          preloadImg.onload = () => { clearTimeout(imgFallback); applyOnce(); };
+          preloadImg.onerror = () => { clearTimeout(imgFallback); applyOnce(); };
           preloadImg.src = imgUrl;
         } else {
           applyImages();
         }
       } catch (err) {
+        if (err && err.name === 'AbortError') {
+          if (timedOut) {
+            setLoadError('加载超时');
+            applyLoadingState(false);
+          }
+          return;
+        }
         console.error(err);
         setLoadError(err.message);
         applyLoadingState(false);
@@ -286,6 +327,14 @@ export default function MobileSlideshowCard({
     };
 
     fetchImages();
+
+    return () => {
+      // 在途推进的 nextIdx 属于旧集：换集即作废，防止其完成时把旧下标套到新集上
+      if (pendingAdvanceRef.current) {
+        try { pendingAdvanceRef.current.controller.abort(); } catch {}
+        pendingAdvanceRef.current = null;
+      }
+    };
   }, [currentCollName, imageSort]);
 
   // C1: stable callback — read latest values via refs, no stale closure
@@ -468,10 +517,22 @@ export default function MobileSlideshowCard({
     const imgName = imagesRef.current[nextIdx];
     if (!imgName) return;
 
+    // 视频没法用 Image() 预加载：直接切换（缺失此分支会让"切到视频"永远完不成而卡住）
+    if (isVideoFile(imgName) || videoFileNames.has(imgName)) {
+      pendingAdvanceRef.current = null;
+      if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
+      setActiveIdx(nextIdx);
+      resetProgressBar();
+      scheduleOutgoingClear();
+      preloadImages(nextIdx + 1, PRELOAD_COUNT);
+      return;
+    }
+
     const cacheKey = `${collName}:${imgName}`;
     const cached = preloadCacheRef.current.get(cacheKey);
-    
+
     if (cached && cached.img && cached.img.complete) {
+      pendingAdvanceRef.current = null;
       setTileAspectRatio(cached.aspectRatio || (cached.img.width / cached.img.height));
       if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
@@ -481,11 +542,42 @@ export default function MobileSlideshowCard({
       return;
     }
 
+    // 同一张已在途：不重发（多窗口挤占连接池时重复发只会堆积 + 完成乱序串号）
+    if (pendingAdvanceRef.current && pendingAdvanceRef.current.key === cacheKey) return;
+
     const imgUrl = `/api/image?collection=${encodeURIComponent(collName)}&name=${encodeURIComponent(imgName)}`;
-    
-    fetch(imgUrl, { 
+    const controller = new AbortController();
+    pendingAdvanceRef.current = { key: cacheKey, controller };
+    const myKey = cacheKey;
+
+    // 图片就绪后的切换动作。图片本体始终写入缓存；状态更新只在本次推进
+    // 仍是最新一次时执行（防旧响应把旧下标套到已切换的画面上）
+    const applySwitch = (img, ratio) => {
+      const isLatest = pendingAdvanceRef.current && pendingAdvanceRef.current.key === myKey;
+      if (isLatest) pendingAdvanceRef.current = null;
+      preloadCacheRef.current.set(cacheKey, { img, aspectRatio: ratio });
+      if (!isLatest) return;
+      setTileAspectRatio(ratio);
+      if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
+      setActiveIdx(nextIdx);
+      resetProgressBar();
+      scheduleOutgoingClear();
+      preloadImages(nextIdx + 1, PRELOAD_COUNT);
+    };
+    const loadFull = () => {
+      const img = new Image();
+      img.onload = () => applySwitch(img, img.width / img.height);
+      img.onerror = () => {
+        if (pendingAdvanceRef.current && pendingAdvanceRef.current.key === myKey) {
+          pendingAdvanceRef.current = null;
+        }
+      };
+      img.src = imgUrl;
+    };
+    fetch(imgUrl, {
       method: 'GET',
-      headers: { 'Range': 'bytes=0-65535' }
+      headers: { 'Range': 'bytes=0-65535' },
+      signal: controller.signal
     })
     .then(response => {
       if (!response.ok) throw new Error('Fetch failed');
@@ -494,34 +586,14 @@ export default function MobileSlideshowCard({
     .then(buffer => {
       const dimensions = getImageDimensions(buffer);
       const aspectRatio = dimensions ? dimensions.width / dimensions.height : null;
-      if (aspectRatio) setTileAspectRatio(aspectRatio);
-      
-      const img = new Image();
-      img.onload = () => {
-        const finalAspectRatio = img.width / img.height;
-        preloadCacheRef.current.set(cacheKey, { img, aspectRatio: finalAspectRatio });
-        setTileAspectRatio(finalAspectRatio);
-        if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
-        setActiveIdx(nextIdx);
-        resetProgressBar();
-        scheduleOutgoingClear();
-        preloadImages(nextIdx + 1, PRELOAD_COUNT);
-      };
-      img.src = imgUrl;
+      if (aspectRatio && pendingAdvanceRef.current && pendingAdvanceRef.current.key === myKey) {
+        setTileAspectRatio(aspectRatio);
+      }
+      loadFull();
     })
     .catch(() => {
-      const img = new Image();
-      img.onload = () => {
-        const finalAspectRatio = img.width / img.height;
-        preloadCacheRef.current.set(cacheKey, { img, aspectRatio: finalAspectRatio });
-        setTileAspectRatio(finalAspectRatio);
-        if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
-        setActiveIdx(nextIdx);
-        resetProgressBar();
-        scheduleOutgoingClear();
-        preloadImages(nextIdx + 1, PRELOAD_COUNT);
-      };
-      img.src = imgUrl;
+      if (controller.signal.aborted) return; // 切集中断：新集的加载流程已接管
+      loadFull();
     });
   };
 
@@ -1156,6 +1228,23 @@ export default function MobileSlideshowCard({
 
         {/* Image Display */}
         <div className="mobile-card-media-wrapper">
+          {/* 切集边界垫底帧：新集首图画出第一帧之前由旧集末帧兜底（z0，不可见成本） */}
+          {holdFrame && (
+            <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 1, zIndex: 0 }}>
+              <img
+                src={`/api/image?collection=${encodeURIComponent(holdFrame.coll)}&name=${encodeURIComponent(holdFrame.name)}`}
+                alt=""
+                decoding="sync"
+                className="mobile-card-blur-bg"
+              />
+              <img
+                src={`/api/image?collection=${encodeURIComponent(holdFrame.coll)}&name=${encodeURIComponent(holdFrame.name)}`}
+                alt=""
+                decoding="sync"
+                className="mobile-card-image"
+              />
+            </div>
+          )}
           {images.length === 0 ? (
             isLoadingImages ? (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
@@ -1243,7 +1332,7 @@ export default function MobileSlideshowCard({
                       <img
                         src={getImageUrl(imgName)}
                         alt={imgName}
-                        loading="lazy"
+                        decoding="sync"
                         className="mobile-card-image"
                         onError={() => {
                           // 文件已被删除/不存在：剔除出播放队列，卡在末尾则换下一图集
