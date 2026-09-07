@@ -119,6 +119,78 @@ function clearPersistentCache(dir) {
   }
 }
 
+// ─── 去抖持久化 & 去抖全量重建 ────────────────────────────────────────────
+// harvest 进行时目录 mtime/文件数持续变化，4 个播放窗口的每个请求都会触发
+// 校验失败 → 全量重扫 + 整包写盘。Node 单线程下这些同步 fs 操作会把事件循环
+// 堵死（曾在 2 秒内连写 130 次缓存文件，四个窗口全部卡死）。因此：
+//   1. 写盘统一走 schedulePersistentSave：同一目录 2s 内只落盘一次；
+//   2. /api/collections 校验失败时先用过期缓存应答，全量重建去抖 1.5s 合并执行。
+const pendingSaveTimers = new Map();   // dir -> timer
+const pendingRebuildTimers = new Map(); // dir -> timer
+const rebuildingDirs = new Set();
+
+function schedulePersistentSave(dir) {
+  if (pendingSaveTimers.has(dir)) return;
+  pendingSaveTimers.set(dir, setTimeout(() => {
+    pendingSaveTimers.delete(dir);
+    const collections = dirCollectionsCache.get(dir);
+    if (collections) savePersistentCache(dir, collections, dirImagesCache.get(dir) || new Map());
+  }, 2000));
+}
+
+function scanCollectionsSync(dir) {
+  const imageExtensions = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.mp4', '.webm']);
+  const collections = [];
+  const items = fs.readdirSync(dir, { withFileTypes: true });
+  for (const item of items) {
+    if (!item.isDirectory() || item.name.startsWith('.')) continue;
+    try {
+      const itemPath = path.join(dir, item.name);
+      const files = fs.readdirSync(itemPath);
+      if (!files.some(f => !f.startsWith('.') && imageExtensions.has(path.extname(f).toLowerCase()))) continue;
+    } catch { continue; }
+
+    let mtime = 0;
+    try {
+      const itemPath = path.join(dir, item.name);
+      const files = fs.readdirSync(itemPath).filter(
+        f => !f.startsWith('.') && imageExtensions.has(path.extname(f).toLowerCase())
+      );
+      if (files.length > 0) {
+        const times = files.map(f => { try { return fs.statSync(path.join(itemPath, f)).mtimeMs; } catch { return 0; } });
+        mtime = Math.max(...times, 0);
+      } else {
+        mtime = fs.statSync(itemPath).mtimeMs;
+      }
+    } catch { mtime = 0; }
+
+    collections.push({ name: item.name, mtime });
+  }
+  return collections;
+}
+
+// 后台去抖全量重建：只刷新内存缓存与持久化文件，不关联任何响应
+function scheduleDirRebuild(dir, delay = 1500) {
+  if (pendingRebuildTimers.has(dir)) return;
+  pendingRebuildTimers.set(dir, setTimeout(() => {
+    pendingRebuildTimers.delete(dir);
+    if (rebuildingDirs.has(dir)) return;
+    rebuildingDirs.add(dir);
+    try {
+      const collections = scanCollectionsSync(dir);
+      dirCollectionsCache.set(dir, collections);
+      try { dirMtimeCache.set(dir, fs.statSync(dir).mtimeMs); }
+      catch { dirMtimeCache.set(dir, Date.now()); }
+      schedulePersistentSave(dir);
+      console.log(`[Cache] Background rebuild done: ${collections.length} collections.`);
+    } catch (err) {
+      console.warn(`[Cache] Background rebuild failed: ${err.message}`);
+    } finally {
+      rebuildingDirs.delete(dir);
+    }
+  }, delay));
+}
+
 function validateCache(dir) {
   try {
     const cCollections = dirCollectionsCache.get(dir);
@@ -172,7 +244,7 @@ function validateCache(dir) {
     }
 
     dirMtimeCache.set(dir, stat.mtimeMs);
-    savePersistentCache(dir, cCollections, cImages);
+    schedulePersistentSave(dir);
     console.log(`[Cache] Deep validation passed: ${actualFolders.size} folders match.`);
     return true;
   } catch (err) {
@@ -745,43 +817,23 @@ export function createApiHandler() {
             res.end(JSON.stringify({ scanDirectory: activeResourcesDir, collections: cached }));
             return;
           }
+          // 校验失败（harvest 进行时目录持续变化）：立即用过期缓存应答，
+          // 全量重扫去抖到后台合并执行——绝不在请求路径上同步重扫 977 个目录
+          scheduleDirRebuild(activeResourcesDir);
+          const stale = dirCollectionsCache.get(activeResourcesDir);
+          if (stale && stale.length > 0) {
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'STALE-REBUILDING' });
+            res.end(JSON.stringify({ scanDirectory: activeResourcesDir, collections: stale }));
+            return;
+          }
           dirCollectionsCache.delete(activeResourcesDir);
           dirMtimeCache.delete(activeResourcesDir);
           dirImagesCache.delete(activeResourcesDir);
-        dirImagesMtimeCache.delete(activeResourcesDir);
           dirImagesMtimeCache.delete(activeResourcesDir);
-          clearPersistentCache(activeResourcesDir);
         }
 
-        // Full scan
-        const collections = [];
-        const items = fs.readdirSync(activeResourcesDir, { withFileTypes: true });
-        const imageExtensions = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.mp4', '.webm']);
-
-        for (const item of items) {
-          if (!item.isDirectory() || item.name.startsWith('.')) continue;
-          try {
-            const itemPath = path.join(activeResourcesDir, item.name);
-            const files = fs.readdirSync(itemPath);
-            if (!files.some(f => !f.startsWith('.') && imageExtensions.has(path.extname(f).toLowerCase()))) continue;
-          } catch { continue; }
-
-          let mtime = 0;
-          try {
-            const itemPath = path.join(activeResourcesDir, item.name);
-            const files = fs.readdirSync(itemPath).filter(
-              f => !f.startsWith('.') && imageExtensions.has(path.extname(f).toLowerCase())
-            );
-            if (files.length > 0) {
-              const times = files.map(f => { try { return fs.statSync(path.join(itemPath, f)).mtimeMs; } catch { return 0; } });
-              mtime = Math.max(...times, 0);
-            } else {
-              mtime = fs.statSync(itemPath).mtimeMs;
-            }
-          } catch { mtime = 0; }
-
-          collections.push({ name: item.name, mtime });
-        }
+        // Full scan（仅内存中完全没有可用列表时才会走到这里）
+        const collections = scanCollectionsSync(activeResourcesDir);
 
         dirCollectionsCache.set(activeResourcesDir, collections);
         try { dirMtimeCache.set(activeResourcesDir, fs.statSync(activeResourcesDir).mtimeMs); }
@@ -922,7 +974,9 @@ export function createApiHandler() {
         catch { dmt.set(collection, Date.now()); }
         dirImagesCache.set(activeResourcesDir, dirImages);
         const dirColl = dirCollectionsCache.get(activeResourcesDir);
-        savePersistentCache(activeResourcesDir, dirColl, dirImages);
+        // harvest 进行时每个账号目录的 mtime 一直在变，此路径是最高频的重建入口；
+        // 整包写盘去抖合并，否则 4 窗口播放时会把事件循环堵死
+        if (dirColl) schedulePersistentSave(activeResourcesDir);
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'MISS' });
         res.end(JSON.stringify({ name: collection, images }));

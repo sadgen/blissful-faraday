@@ -79,7 +79,7 @@ export default function SlideshowTile({
   // --- Hook 1: Image Preloader ---
   const {
     images, setImages, imagesColl, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
-    isLoadingImages, isLoadingRef, loadError, postIndex,
+    isLoadingImages, isLoadingRef, loadError, postIndex, holdFrame,
     imagesRef, activeIdxRef, shouldStartFromLastRef,
     preloadAndAdvance,
     videoFileNames,
@@ -367,6 +367,18 @@ export default function SlideshowTile({
         display: 'flex', justifyContent: 'center', alignItems: 'center',
         width: '100%', height: '100%'
       }}>
+        {/* 切集边界垫底帧：新集首图画出第一帧之前由旧集末帧兜底（z0，不可见成本） */}
+        {holdFrame && (
+          <div className="slide-image-container" style={{ opacity: 1, zIndex: 0 }}>
+            <img
+              src={`/api/image?collection=${encodeURIComponent(holdFrame.coll)}&name=${encodeURIComponent(holdFrame.name)}`}
+              alt=""
+              decoding="sync"
+              draggable="false"
+              className="slide-image-main"
+            />
+          </div>
+        )}
         {isLoadingImages && images.length === 0 ? (
           <div style={{ zIndex: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
             <div style={{
@@ -444,7 +456,7 @@ export default function SlideshowTile({
                     <img
                       src={getImageUrl(imgName)}
                       alt={imgName}
-                      decoding="async"
+                      decoding="sync"
                       draggable="false"
                       className="slide-image-main"
                       onError={() => {

@@ -81,14 +81,22 @@ function serveStatic(req, res) {
   if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
     const ext = path.extname(resolved).toLowerCase();
     const mime = MIME_TYPES[ext] || 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': mime });
+    // html 必须每次回源校验，否则浏览器启发式缓存会拿到旧 hash 的 JS bundle；
+    // /assets/ 下的产物带内容 hash，可放心长缓存
+    const headers = { 'Content-Type': mime };
+    if (ext === '.html') {
+      headers['Cache-Control'] = 'no-cache';
+    } else if (urlPath.startsWith('/assets/')) {
+      headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+    }
+    res.writeHead(200, headers);
     if (req.method === 'HEAD') { res.end(); return; }
     fs.createReadStream(resolved).pipe(res);
   } else {
     // SPA fallback — serve index.html for any unmatched path
     const indexPath = path.join(distDir, 'index.html');
     if (fs.existsSync(indexPath)) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
       if (req.method === 'HEAD') { res.end(); return; }
       fs.createReadStream(indexPath).pipe(res);
     } else {

@@ -37,11 +37,25 @@ export default function useImagePreloader({
   const [tileAspectRatio, setTileAspectRatio] = useState(null);
   // Instagram 帖子索引：filename -> { postNo, totalPosts, caption }；非 IG 图集为 null
   const [postIndex, setPostIndex] = useState(null);
+  // 切集边界垫底层：换成新图集的那一帧 commit 里旧容器会整体卸载，若不垫一层
+  // 旧集末帧，新 <img> 挂载解码的空档会露黑。holdFrame 以 z0 垫底，超时自清
+  const [holdFrame, setHoldFrame] = useState(null);
+  const holdTimerRef = useRef(null);
+  const clearHoldTimer = useCallback(() => {
+    if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
+  }, []);
+  const showHoldFrame = useCallback((coll, name) => {
+    clearHoldTimer();
+    setHoldFrame({ coll, name });
+    holdTimerRef.current = setTimeout(() => setHoldFrame(null), 2500);
+  }, [clearHoldTimer]);
 
   const preloadCacheRef = useRef(new Map());
   const activeIdxRef = useRef(activeIdx);
   const imagesRef = useRef(images);
   const shouldStartFromLastRef = useRef(false);
+  const imagesCollRef = useRef('');
+  useEffect(() => { imagesCollRef.current = imagesColl; }, [imagesColl]);
   // C4: separate controllers — directory switch vs slide advance must not abort each other
   const abortImagesRef = useRef(null);   // /api/collection/images (directory switch)
   const abortPreloadRef = useRef(null);  // /api/image range fetch (slide advance)
@@ -60,6 +74,7 @@ export default function useImagePreloader({
 
   // C3: clear any pending timer on unmount / collection change
   useEffect(() => clearOutgoingTimer, [clearOutgoingTimer]);
+  useEffect(() => clearHoldTimer, [clearHoldTimer]);
 
   // Sync refs
   useEffect(() => { activeIdxRef.current = activeIdx; }, [activeIdx]);
@@ -155,6 +170,7 @@ export default function useImagePreloader({
     if (!currentCollName) {
       setImages([]);
       setImagesColl('');
+      setHoldFrame(null);
       setTileAspectRatio(null);
       setPostIndex(null);
       applyLoadingState(false);
@@ -217,6 +233,15 @@ export default function useImagePreloader({
           const firstIsVideo = isVideoFile(newImages[0]);
 
           const applyImages = () => {
+            // 换集瞬间旧容器整体卸载：先把旧集当前帧留作垫底，盖住新 img 挂载解码空档
+            const prevName = imagesRef.current[activeIdxRef.current];
+            const prevColl = imagesCollRef.current;
+            if (prevName && prevColl && prevColl !== currentCollName && !isVideoFile(prevName)) {
+              showHoldFrame(prevColl, prevName);
+            } else {
+              clearHoldTimer();
+              setHoldFrame(null);
+            }
             setImages(newImages);
             setImagesColl(currentCollName);
             let startIdx = 0;
@@ -379,7 +404,7 @@ export default function useImagePreloader({
 
   return {
     images, setImages, imagesColl, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
-    isLoadingImages, isLoadingRef, loadError, tileAspectRatio, postIndex,
+    isLoadingImages, isLoadingRef, loadError, tileAspectRatio, postIndex, holdFrame,
     imagesRef, activeIdxRef, shouldStartFromLastRef,
     preloadAndAdvance, preloadImages, getImageDimensions, preloadCacheRef,
     videoFileNames, scheduleOutgoingClear,
