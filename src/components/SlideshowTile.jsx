@@ -78,8 +78,8 @@ export default function SlideshowTile({
 
   // --- Hook 1: Image Preloader ---
   const {
-    images, setImages, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
-    isLoadingImages, loadError, postIndex,
+    images, setImages, imagesColl, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
+    isLoadingImages, isLoadingRef, loadError, postIndex,
     imagesRef, activeIdxRef, shouldStartFromLastRef,
     preloadAndAdvance,
     videoFileNames,
@@ -132,6 +132,7 @@ export default function SlideshowTile({
     isSyncMode,
     syncTrigger,
     onRequestNextCollection,
+    isLoadingRef,
   });
 
   const handleDelete = (e) => {
@@ -248,8 +249,10 @@ export default function SlideshowTile({
       }
     : {};
 
+  // URL 按 images 数组归属的图集构造：切集加载期间 currentCollName 已变，
+  // 旧图仍需用旧集名加载才能无缝显示
   const getImageUrl = (imgName) =>
-    `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(imgName)}`;
+    `/api/image?collection=${encodeURIComponent(imagesColl || currentCollName)}&name=${encodeURIComponent(imgName)}`;
 
   // 当前媒体的帖子信息（IG 账号图集才有）：第 x/y 帖 + caption
   const activePostInfo = postIndex && images[activeIdx] ? postIndex.get(images[activeIdx]) : null;
@@ -364,7 +367,7 @@ export default function SlideshowTile({
         display: 'flex', justifyContent: 'center', alignItems: 'center',
         width: '100%', height: '100%'
       }}>
-        {isLoadingImages ? (
+        {isLoadingImages && images.length === 0 ? (
           <div style={{ zIndex: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
             <div style={{
               width: 32, height: 32,

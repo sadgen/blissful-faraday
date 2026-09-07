@@ -30,6 +30,7 @@ export default function useSlideshowPlayback({
   isSyncMode,
   syncTrigger,
   onRequestNextCollection,
+  isLoadingRef,
 }) {
   const [localIsPlaying, setLocalIsPlaying] = useState(true);
   const [localSpeedMult, setLocalSpeedMult] = useState(1);
@@ -127,6 +128,9 @@ export default function useSlideshowPlayback({
   // --- advanceSlide ---
 
   const advanceSlide = useCallback((direction) => {
+    // 下一图集还在加载中：不推进（避免 timer/滚轮/视频 onEnded 在加载期间
+    // 重复消耗图集队列）；旧画面此刻仍显示在瓦片上
+    if (isLoadingRef && isLoadingRef.current) return;
     const currentImages = imagesRef.current;
     if (currentImages.length === 0) return;
 
@@ -136,6 +140,8 @@ export default function useSlideshowPlayback({
     const currentCollNameVal = currentCollNameRef.current;
 
     // Reached end of collection -> cycle to next
+    // 注意：不重置 activeIdx —— 加载期间旧 images 数组仍显示，保持当前帧无缝过渡，
+    // 新集首图就绪后由 applyImages 设置真正的起始下标
     if (nextIdx >= currentImages.length) {
       // Try session-level remaining queue first
       let nextCollName = onRequestNextCollection ? onRequestNextCollection() : null;
@@ -150,7 +156,6 @@ export default function useSlideshowPlayback({
           displayedCollectionsRef.current[tileId] = nextCollName;
         }
       }
-      setActiveIdx(0);
       setOutgoingIdx(null);
       return;
     }
@@ -170,7 +175,6 @@ export default function useSlideshowPlayback({
           displayedCollectionsRef.current[tileId] = nextCollName;
         }
       }
-      setActiveIdx(0);
       setOutgoingIdx(null);
       return;
     }
@@ -218,7 +222,7 @@ export default function useSlideshowPlayback({
             displayedCollectionsRef.current[tileId] = next;
           }
         }
-        setActiveIdx(0);
+        // 不重置 activeIdx：加载期间旧画面继续显示，避免闪黑
         setOutgoingIdx(null);
         return;
       }
@@ -233,9 +237,8 @@ export default function useSlideshowPlayback({
         displayedCollectionsRef.current[tileId] = nextCollName;
       }
     }
-    setActiveIdx(0);
     setOutgoingIdx(null);
-  }, [getNextUniqueCollection, setCurrentCollName, onCollectionChange, tileId, setActiveIdx, setOutgoingIdx, displayedCollectionsRef, onRequestNextCollection]);
+  }, [getNextUniqueCollection, setCurrentCollName, onCollectionChange, tileId, setOutgoingIdx, displayedCollectionsRef, onRequestNextCollection]);
 
   // --- selectRandomCollection ---
 
@@ -280,8 +283,13 @@ export default function useSlideshowPlayback({
       const isSyncTick = syncTrigger !== prevSyncTriggerRef.current;
       prevSyncTriggerRef.current = syncTrigger;
       if (isSyncTick && isPlaying && activeIdx >= 0 && imagesRef.current.length > 0) {
-        advanceSlideRef.current(1);
-        resetProgressBarRef.current();
+        if (isLoadingRef && isLoadingRef.current) {
+          // 下一图集加载中：回滚 ref，本 tick 不丢失，加载完成后的下一个 tick 照常推进
+          prevSyncTriggerRef.current = syncTrigger - 1;
+        } else {
+          advanceSlideRef.current(1);
+          resetProgressBarRef.current();
+        }
       } else if (isSyncTick && !isPlaying) {
         // Images not ready (or wheel-paused) — roll back the ref so the
         // pending tick isn't lost. When isPlaying flips true, this effect
@@ -333,9 +341,9 @@ export default function useSlideshowPlayback({
     const nextCollName = e.target.value;
     setCurrentCollName(nextCollName);
     if (onCollectionChange) onCollectionChange(tileId, nextCollName);
-    setActiveIdx(0);
+    // 不重置 activeIdx：加载期间旧画面继续显示，避免闪黑
     setOutgoingIdx(null);
-  }, [setCurrentCollName, onCollectionChange, tileId, setActiveIdx, setOutgoingIdx]);
+  }, [setCurrentCollName, onCollectionChange, tileId, setOutgoingIdx]);
 
   return {
     localIsPlaying, setLocalIsPlaying,

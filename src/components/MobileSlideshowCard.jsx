@@ -29,6 +29,8 @@ export default function MobileSlideshowCard({
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [images, setImages] = useState([]);
+  // images 数组归属的图集名：切集加载期间旧图继续显示，URL 须用旧集名
+  const [imagesColl, setImagesColl] = useState('');
   const [activeIdx, setActiveIdx] = useState(0);
   const [outgoingIdx, setOutgoingIdx] = useState(null);
   const [localIsPlaying, setLocalIsPlaying] = useState(true);
@@ -138,6 +140,9 @@ export default function MobileSlideshowCard({
   useEffect(() => { sortMethodRef.current = sortMethod; }, [sortMethod]);
   
   const [isLoadingImages, setIsLoadingImages] = useState(false);
+  // 同步 ref：advanceSlide 需要在事件瞬间读取加载状态
+  const isLoadingRef = useRef(false);
+  const applyLoadingState = (v) => { isLoadingRef.current = v; setIsLoadingImages(v); };
   const [loadError, setLoadError] = useState('');
 
   // Sync with parent's initialCollectionName prop when it changes
@@ -184,9 +189,9 @@ export default function MobileSlideshowCard({
   // Detect aspect ratio when active image index changes
   useEffect(() => {
     if (images.length > 0 && activeIdx >= 0 && activeIdx < images.length) {
-      detectAspectRatio(currentCollName, images[activeIdx]);
+      detectAspectRatio(imagesColl || currentCollName, images[activeIdx]);
     }
-  }, [activeIdx, currentCollName, images.length]);
+  }, [activeIdx, currentCollName, imagesColl, images.length]);
 
   // Fetch images when directory changes
   useEffect(() => {
@@ -198,7 +203,7 @@ export default function MobileSlideshowCard({
 
     const fetchImages = async () => {
       try {
-        setIsLoadingImages(true);
+        applyLoadingState(true);
         setLoadError('');
         const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}&sort=${imageSort}`);
         if (!res.ok) {
@@ -247,50 +252,36 @@ export default function MobileSlideshowCard({
         });
 
         // Preload first image before switching (prevents black flash)
+        const applyImages = () => {
+          setImages(newImages);
+          setImagesColl(currentCollName);
+          let startIdx = 0;
+          if (shouldStartFromLastRef.current && newImages.length > 0) {
+            startIdx = newImages.length - 1;
+            shouldStartFromLastRef.current = false;
+          }
+          setActiveIdx(startIdx);
+          setOutgoingIdx(null);
+          applyLoadingState(false);
+          if (newImages.length > 0) {
+            detectAspectRatio(currentCollName, newImages[0]);
+            setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1000);
+          }
+        };
+
         if (newImages.length > 0) {
           const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(newImages[0])}`;
           const preloadImg = new Image();
-          preloadImg.onload = () => {
-            setImages(newImages);
-            let startIdx = 0;
-            if (shouldStartFromLastRef.current && newImages.length > 0) {
-              startIdx = newImages.length - 1;
-              shouldStartFromLastRef.current = false;
-            }
-            setActiveIdx(startIdx);
-            setOutgoingIdx(null);
-            setIsLoadingImages(false);
-            if (newImages.length > 0) {
-              detectAspectRatio(currentCollName, newImages[0]);
-              setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1000);
-            }
-          };
-          preloadImg.onerror = () => {
-            setImages(newImages);
-            let startIdx = 0;
-            if (shouldStartFromLastRef.current && newImages.length > 0) {
-              startIdx = newImages.length - 1;
-              shouldStartFromLastRef.current = false;
-            }
-            setActiveIdx(startIdx);
-            setOutgoingIdx(null);
-            setIsLoadingImages(false);
-            if (newImages.length > 0) {
-              detectAspectRatio(currentCollName, newImages[0]);
-              setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1000);
-            }
-          };
+          preloadImg.onload = applyImages;
+          preloadImg.onerror = applyImages;
           preloadImg.src = imgUrl;
         } else {
-          setImages([]);
-          setActiveIdx(0);
-          setOutgoingIdx(null);
-          setIsLoadingImages(false);
+          applyImages();
         }
       } catch (err) {
         console.error(err);
         setLoadError(err.message);
-        setIsLoadingImages(false);
+        applyLoadingState(false);
       }
     };
 
@@ -535,14 +526,16 @@ export default function MobileSlideshowCard({
   };
 
   const advanceSlide = (direction) => {
+    // 下一图集还在加载中：不推进，旧画面继续显示
+    if (isLoadingRef.current) return;
     const currentImages = imagesRef.current;
     if (currentImages.length === 0) return;
-    
+
     const currentIdx = activeIdxRef.current;
-    
+
     let nextIdx = currentIdx + direction;
     const currentCollNameVal = currentCollNameRef.current;
-    
+
     if (nextIdx >= currentImages.length) {
       let nextCollName = onRequestNextCollection ? onRequestNextCollection() : null;
       if (nextCollName === null || nextCollName === undefined) {
@@ -556,7 +549,7 @@ export default function MobileSlideshowCard({
           displayedCollectionsRef.current[tileId] = nextCollName;
         }
       }
-      setActiveIdx(0);
+      // 不重置 activeIdx：加载期间旧画面继续显示，避免闪黑
       setOutgoingIdx(null);
       resetProgressBar();
       return;
@@ -574,12 +567,11 @@ export default function MobileSlideshowCard({
           displayedCollectionsRef.current[tileId] = nextCollName;
         }
       }
-      setActiveIdx(0);
       setOutgoingIdx(null);
       resetProgressBar();
       return;
     }
-    
+
     preloadAndAdvance(nextIdx, currentCollNameVal, currentIdx);
   };
 
@@ -596,7 +588,7 @@ export default function MobileSlideshowCard({
             displayedCollectionsRef.current[tileId] = next;
           }
         }
-        setActiveIdx(0);
+        // 不重置 activeIdx：加载期间旧画面继续显示，避免闪黑
         setOutgoingIdx(null);
         resetProgressBar();
         return;
@@ -611,7 +603,6 @@ export default function MobileSlideshowCard({
         displayedCollectionsRef.current[tileId] = nextCollName;
       }
     }
-    setActiveIdx(0);
     setOutgoingIdx(null);
     resetProgressBar();
   };
@@ -816,7 +807,8 @@ export default function MobileSlideshowCard({
   };
 
   const getImageUrl = (imgName) => {
-    return `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(imgName)}`;
+    // 切集加载期间 currentCollName 已变，旧图必须按 imagesColl（旧集名）取
+    return `/api/image?collection=${encodeURIComponent(imagesColl || currentCollName)}&name=${encodeURIComponent(imgName)}`;
   };
 
   // Precise grid layout parsing for mobile to ensure perfectly aligned centering shifts without boundary overflow
@@ -1164,32 +1156,34 @@ export default function MobileSlideshowCard({
 
         {/* Image Display */}
         <div className="mobile-card-media-wrapper">
-          {isLoadingImages ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-              <div style={{
-                width: 24,
-                height: 24,
-                border: '2px solid rgba(139, 92, 246, 0.1)',
-                borderTopColor: 'var(--accent-purple)',
-                borderRadius: '50%',
-                animation: 'spin 1s linear infinite'
-              }} />
-              <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>正在扫描...</span>
-            </div>
-          ) : loadError ? (
-            <div style={{ color: '#ef4444', fontSize: '0.65rem', padding: 8, textAlign: 'center' }}>
-              <p>{loadError}</p>
-            </div>
-          ) : images.length === 0 ? (
-            <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem', textAlign: 'center' }}>
-              <p>暂无图片</p>
-            </div>
+          {images.length === 0 ? (
+            isLoadingImages ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  width: 24,
+                  height: 24,
+                  border: '2px solid rgba(139, 92, 246, 0.1)',
+                  borderTopColor: 'var(--accent-purple)',
+                  borderRadius: '50%',
+                  animation: 'spin 1s linear infinite'
+                }} />
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>正在扫描...</span>
+              </div>
+            ) : loadError ? (
+              <div style={{ color: '#ef4444', fontSize: '0.65rem', padding: 8, textAlign: 'center' }}>
+                <p>{loadError}</p>
+              </div>
+            ) : (
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem', textAlign: 'center' }}>
+                <p>暂无图片</p>
+              </div>
+            )
           ) : (
             images.map((imgName, index) => {
               const isActive = index === activeIdx;
               const isOutgoing = index === outgoingIdx;
               if (!isActive && !isOutgoing) return null;
-              const isVideo = videoFileNames.has(imgName);
+              const isVideo = isVideoFile(imgName) || videoFileNames.has(imgName);
 
               return (
                 <div
@@ -1203,38 +1197,40 @@ export default function MobileSlideshowCard({
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    opacity: isActive ? 1 : 0,
-                    transition: transitionEffect === 'fade' ? 'opacity 0.4s ease-in-out' : 'none',
+                    // outgoing 保持可见并垫在 active 之下：新图/视频画出第一帧前由旧图兜底，不闪黑
+                    opacity: 1,
                     zIndex: isActive ? 2 : 1
                   }}
                 >
-                  {isVideo && isActive ? (
-                    <video
-                      ref={el => {
-                        if (el) {
-                          el.playbackRate = videoSpeed;
-                          el.play().catch(() => {});
-                        }
-                      }}
-                      src={getImageUrl(imgName)}
-                      muted
-                      autoPlay
-                      playsInline
-                      preload="auto"
-                      onEnded={() => advanceSlide(1)}
-                      onLoadedMetadata={(e) => {
-                        e.target.playbackRate = videoSpeed;
-                        e.target.play().catch(() => {});
-                      }}
-                      onCanPlay={(e) => {
-                        e.target.play().catch(() => {});
-                      }}
-                      style={{
-                        width: '100%',
-                        height: '100%',
-                        objectFit: 'contain'
-                      }}
-                    />
+                  {isVideo ? (
+                    isActive ? (
+                      <video
+                        ref={el => {
+                          if (el) {
+                            el.playbackRate = videoSpeed;
+                            el.play().catch(() => {});
+                          }
+                        }}
+                        src={getImageUrl(imgName)}
+                        muted
+                        autoPlay
+                        playsInline
+                        preload="auto"
+                        onEnded={() => advanceSlide(1)}
+                        onLoadedMetadata={(e) => {
+                          e.target.playbackRate = videoSpeed;
+                          e.target.play().catch(() => {});
+                        }}
+                        onCanPlay={(e) => {
+                          e.target.play().catch(() => {});
+                        }}
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'contain'
+                        }}
+                      />
+                    ) : null
                   ) : (
                     <>
                       {/* Aspect Ratio Blurred Background */}
@@ -1251,7 +1247,7 @@ export default function MobileSlideshowCard({
                         className="mobile-card-image"
                         onError={() => {
                           // 文件已被删除/不存在：剔除出播放队列，卡在末尾则换下一图集
-                          preloadCacheRef.current.delete(`${currentCollName}:${imgName}`);
+                          preloadCacheRef.current.delete(`${imagesColl || currentCollName}:${imgName}`);
                           setImages(prev => prev.filter(x => x !== imgName));
                           if (activeIdx >= images.length - 1) {
                             if (images.length <= 1) skipToNextCollection(1);

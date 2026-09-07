@@ -390,8 +390,10 @@ html, body, #root, .app-container {
   opacity: 1;
   transform: none;
 }
+/* outgoing 保持可见并垫在 active 之下：新图未画出第一帧前由旧图兜底，
+   消除切换瞬间的黑屏（新图盖上来后完全不可见） */
 .effect-none .slide-image-container.outgoing {
-  opacity: 0;
+  opacity: 1;
   transform: none;
 }
 

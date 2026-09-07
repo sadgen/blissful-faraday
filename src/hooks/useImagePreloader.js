@@ -24,9 +24,15 @@ export default function useImagePreloader({
   imageSort = 'name',
 }) {
   const [images, setImages] = useState([]);
+  // images 数组当前归属的图集名。切集加载期间 currentCollName 已变而 images 还是
+  // 旧集的，URL 必须用 imagesColl 才能让旧画面在加载期间继续无缝显示
+  const [imagesColl, setImagesColl] = useState('');
   const [activeIdx, setActiveIdx] = useState(0);
   const [outgoingIdx, setOutgoingIdx] = useState(null);
   const [isLoadingImages, setIsLoadingImages] = useState(false);
+  // 同步 ref 版本：advanceSlide 等回调需要在事件发生瞬间读取，不能等 effect 同步
+  const isLoadingRef = useRef(false);
+  const applyLoadingState = (v) => { isLoadingRef.current = v; setIsLoadingImages(v); };
   const [loadError, setLoadError] = useState('');
   const [tileAspectRatio, setTileAspectRatio] = useState(null);
   // Instagram 帖子索引：filename -> { postNo, totalPosts, caption }；非 IG 图集为 null
@@ -76,16 +82,18 @@ export default function useImagePreloader({
   // Detect aspect ratio of images/videos
   useEffect(() => {
     if (images.length > 0 && activeIdx >= 0 && activeIdx < images.length) {
+      // 加载期间 currentCollName 已指向新集，宽高比必须按 images 归属的集取
+      const collForUrl = imagesColl || currentCollName;
       const fileName = images[activeIdx];
       const isVideo = isVideoFile(fileName);
       // P2: reuse cached aspectRatio from preloadCacheRef — skip the range fetch entirely
-      const cacheKey = `${currentCollName}:${fileName}`;
+      const cacheKey = `${collForUrl}:${fileName}`;
       const cached = preloadCacheRef.current.get(cacheKey);
       if (cached && cached.aspectRatio) {
         setTileAspectRatio(cached.aspectRatio);
         return;
       }
-      const imgUrl = `/api/image?collection=${encodeURIComponent(currentCollName)}&name=${encodeURIComponent(fileName)}`;
+      const imgUrl = `/api/image?collection=${encodeURIComponent(collForUrl)}&name=${encodeURIComponent(fileName)}`;
 
       if (isVideo) {
         // For videos: try header parse first, fall back to <video> element or 16:9
@@ -140,20 +148,22 @@ export default function useImagePreloader({
           });
       }
     }
-  }, [activeIdx, currentCollName, images.length]);
+  }, [activeIdx, currentCollName, imagesColl, images.length]);
 
   // Fetch images when collection changes
   useEffect(() => {
     if (!currentCollName) {
       setImages([]);
+      setImagesColl('');
       setTileAspectRatio(null);
       setPostIndex(null);
+      applyLoadingState(false);
       return;
     }
 
     const fetchImages = async () => {
       try {
-        setIsLoadingImages(true);
+        applyLoadingState(true);
         setLoadError('');
         if (abortImagesRef.current) abortImagesRef.current.abort();
         const controller = new AbortController();
@@ -208,6 +218,7 @@ export default function useImagePreloader({
 
           const applyImages = () => {
             setImages(newImages);
+            setImagesColl(currentCollName);
             let startIdx = 0;
             if (shouldStartFromLastRef.current && newImages.length > 0) {
               startIdx = newImages.length - 1;
@@ -215,7 +226,7 @@ export default function useImagePreloader({
             }
             setActiveIdx(startIdx);
             setOutgoingIdx(null);
-            setIsLoadingImages(false);
+            applyLoadingState(false);
             preloadImages(startIdx + 1, PRELOAD_COUNT);
           };
 
@@ -230,15 +241,16 @@ export default function useImagePreloader({
           }
         } else {
           setImages([]);
+          setImagesColl(currentCollName);
           setActiveIdx(0);
           setOutgoingIdx(null);
-          setIsLoadingImages(false);
+          applyLoadingState(false);
         }
       } catch (err) {
         if (err.name === 'AbortError') return; // 正常中断，不污染 loadError
         console.error(err);
         setLoadError(err.message);
-        setIsLoadingImages(false);
+        applyLoadingState(false);
       }
     };
     fetchImages();
@@ -366,8 +378,8 @@ export default function useImagePreloader({
   const videoFileNames = new Set(images.filter(isVideoFile));
 
   return {
-    images, setImages, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
-    isLoadingImages, loadError, tileAspectRatio, postIndex,
+    images, setImages, imagesColl, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
+    isLoadingImages, isLoadingRef, loadError, tileAspectRatio, postIndex,
     imagesRef, activeIdxRef, shouldStartFromLastRef,
     preloadAndAdvance, preloadImages, getImageDimensions, preloadCacheRef,
     videoFileNames, scheduleOutgoingClear,
