@@ -334,7 +334,8 @@ export default function MobileControlSheet({
                 </div>
               </div>
 
-              {/* Instagram 账号过滤 */}
+              {/* Instagram 账号过滤（懒挂载：抽屉打开才请求账号清单） */}
+              {isOpen && (
               <div className="mobile-sheet-section">
                 <div className="mobile-sheet-section-title">
                   📋 Instagram 账号
@@ -351,6 +352,7 @@ export default function MobileControlSheet({
                   maxHeight={260}
                 />
               </div>
+              )}
 
               {/* Time Range Filters */}
               <div className="mobile-sheet-section">

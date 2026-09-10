@@ -599,6 +599,116 @@ function getAccountMediaCached(accountDir, accountName) {
   return files;
 }
 
+// ─── /api/collections 的 IG 帖子级展开（原前端 expandInstagramPosts 迁入）──
+// 原实现首屏对每个 IG 账号发 posts+images 两个请求（数百账号 ≈ 850 个请求，
+// 过反代时逐请求叠加 RTT 首屏极慢），现合并为 /api/collections?expand=ig 一个
+// 请求。展开语义与原前端逐条对齐：带 manifest 的账号展开为 user::postId
+// （mtime=发帖时间），有未归属文件时追加 user::__unsorted，无 manifest 目录
+// 原样保留；发布/下载/人像三态过滤在展开时同步应用。展开结果按各账号目录
+// mtime 自校验缓存——目录无变化时零重算直接复用，harvest 入库只重算一次。
+const igExpandCache = new Map(); // scanDir -> { postDays, dlDays, person, mtimes: Map(name->mtime), list }
+
+// 逐目录 stat 比对缓存基线：任一账号目录增删/变化即失效（约几百次 stat，毫秒级）
+function expansionCacheUsable(dir, cachedMtimes) {
+  try {
+    const items = fs.readdirSync(dir, { withFileTypes: true });
+    let count = 0;
+    for (const item of items) {
+      if (!item.isDirectory() || item.name.startsWith('.')) continue;
+      count++;
+      let mt;
+      try { mt = fs.statSync(path.join(dir, item.name)).mtimeMs; }
+      catch { return false; }
+      if ((cachedMtimes.get(item.name) || -1) !== mt) return false;
+    }
+    return count === cachedMtimes.size;
+  } catch { return false; }
+}
+
+function computeExpandedCollections(dir, collections, postDays, dlDays, personParam) {
+  const now = Date.now();
+  const dayMs = 86400000;
+  const postCutoff = postDays > 0 ? now - postDays * dayMs : null;
+  const dlCutoff = dlDays > 0 ? now - dlDays * dayMs : null;
+  const needPerson = personParam === '1' || personParam === '0';
+  const exts = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.mp4', '.webm']);
+  const igRoot = path.resolve(INSTAGRAM_SCRAPE_DIR);
+  const out = [];
+  // 无发布时间的条目（普通文件夹/无清单账号）：发布过滤开启时隐藏，否则只受下载过滤约束
+  const keepUntimed = (c) => {
+    if (postCutoff !== null) return;
+    if (!dlCutoff || (c?.mtime || 0) >= dlCutoff) out.push(c);
+  };
+  for (const raw of collections) {
+    const c = typeof raw === 'string' ? { name: raw, mtime: 0 } : raw;
+    if (!c || !isSafeAccountName(c.name)) { keepUntimed(c); continue; }
+    try {
+      const accountDir = path.resolve(path.join(igRoot, c.name));
+      if (!isPathWithin(accountDir, igRoot) || accountDir === igRoot) { keepUntimed(c); continue; }
+      const manifestPath = path.join(accountDir, '.posts.json');
+      let manifest = { posts: {} };
+      try {
+        if (fs.existsSync(manifestPath)) {
+          const d = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+          if (d && d.posts && typeof d.posts === 'object' && !Array.isArray(d.posts)) manifest = d;
+        }
+      } catch {}
+      // 人像过滤需要时才加载识别元数据（loadMetaFor 自带 mtime 缓存）
+      const meta = needPerson ? personDetector.loadMetaFor(accountDir) : null;
+      let posts = sortedPostsOf(manifest);
+      if (posts.length && (dlCutoff !== null || needPerson)) {
+        // dl 为帖内文件最新落盘时间（仅下载过滤需要）；np/nn 为帖内已识别的
+        // 人像数/非人像数（仅人像过滤需要）
+        for (const p of posts) {
+          let dl = 0, np = 0, nn = 0;
+          for (const f of p.media) {
+            if (typeof f !== 'string' || f.includes('/') || f.includes('\\')) continue;
+            if (dlCutoff !== null) {
+              try {
+                const st = fs.statSync(path.join(accountDir, f));
+                if (st.mtimeMs > dl) dl = st.mtimeMs;
+              } catch {}
+            }
+            if (meta) {
+              const m = meta[f];
+              if (m) { if (m.p === 1) np++; else nn++; }
+            }
+          }
+          if (dlCutoff !== null) p.dl = dl || null;
+          if (meta) { p.np = np; p.nn = nn; }
+        }
+      }
+      posts = posts.filter(p => {
+        if (postCutoff !== null && (!p.ts || p.ts * 1000 < postCutoff)) return false;
+        if (dlCutoff !== null && (!p.dl || p.dl < dlCutoff)) return false;
+        if (personParam === '1' && (p.np || 0) === 0) return false;
+        if (personParam === '0' && (p.nn || 0) === 0) return false;
+        return true;
+      });
+      if (!posts.length && (postCutoff !== null || needPerson)) continue; // 过滤下无合格帖子：整账号隐藏
+      if (!posts.length) { out.push(c); continue; }
+      for (const p of posts) out.push({ name: `${c.name}::${p.id}`, mtime: (p.ts || 0) * 1000 });
+      // 未归类条目无发布时间：发布过滤开启时不显示（与原前端一致，leftover 按
+      // 过滤后帖子的 media 集合判断，文件清单同样应用人像过滤）
+      if (postCutoff === null) {
+        const inPosts = new Set(posts.flatMap(p => p.media || []));
+        let files = [];
+        try {
+          files = fs.readdirSync(accountDir).filter(
+            f => !f.startsWith('.') && exts.has(path.extname(f).toLowerCase())
+          );
+        } catch {}
+        if (needPerson) files = applyPersonFilter(accountDir, files, personParam);
+        const hasLeftover = files.some(f => !inPosts.has(f));
+        if (hasLeftover && (!dlCutoff || (c.mtime || 0) >= dlCutoff)) {
+          out.push({ name: `${c.name}::__unsorted`, mtime: c.mtime });
+        }
+      }
+    } catch { keepUntimed(c); }
+  }
+  return out;
+}
+
 // ─── API middleware factory ───────────────────────────────────────────────
 
 export function createApiHandler() {
@@ -838,6 +948,9 @@ export function createApiHandler() {
     }
 
     // ── GET /api/collections ────────────────────────────────────────────
+    // ?expand=ig&postDays=N&dlDays=N&person=1|0|-：服务端一次完成 IG 帖子级
+    // 展开（原前端逐账号 posts+images 共 ~850 个请求合并为这一个），展开结果
+    // 按账号目录 mtime 自校验缓存，无变化直接复用。
     if (url.pathname === '/api/collections') {
       try {
         if (!fs.existsSync(activeResourcesDir)) {
@@ -846,44 +959,81 @@ export function createApiHandler() {
           return;
         }
 
+        const wantExpand = url.searchParams.get('expand') === 'ig';
+        const postDays = parseInt(url.searchParams.get('postDays') || '0', 10) || 0;
+        const dlDays = parseInt(url.searchParams.get('dlDays') || '0', 10) || 0;
+        const personParam = url.searchParams.get('person') || '-';
+
         if (!dirCollectionsCache.has(activeResourcesDir)) {
           loadPersistentCache(activeResourcesDir);
         }
 
+        let collections = null;
+        let source = '';
+        let stale = false;
+
         if (dirCollectionsCache.has(activeResourcesDir)) {
           if (validateCache(activeResourcesDir)) {
-            const cached = dirCollectionsCache.get(activeResourcesDir);
-            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'HIT-VALIDATED' });
-            res.end(JSON.stringify({ scanDirectory: activeResourcesDir, collections: cached }));
-            return;
+            collections = dirCollectionsCache.get(activeResourcesDir);
+            source = 'HIT-VALIDATED';
+          } else {
+            // 校验失败（harvest 进行时目录持续变化）：立即用过期缓存应答，
+            // 全量重扫去抖到后台合并执行——绝不在请求路径上同步重扫 977 个目录
+            scheduleDirRebuild(activeResourcesDir);
+            const staleList = dirCollectionsCache.get(activeResourcesDir);
+            if (staleList && staleList.length > 0) {
+              collections = staleList;
+              stale = true;
+              source = 'STALE-REBUILDING';
+            } else {
+              dirCollectionsCache.delete(activeResourcesDir);
+              dirMtimeCache.delete(activeResourcesDir);
+              dirImagesCache.delete(activeResourcesDir);
+              dirImagesMtimeCache.delete(activeResourcesDir);
+            }
           }
-          // 校验失败（harvest 进行时目录持续变化）：立即用过期缓存应答，
-          // 全量重扫去抖到后台合并执行——绝不在请求路径上同步重扫 977 个目录
-          scheduleDirRebuild(activeResourcesDir);
-          const stale = dirCollectionsCache.get(activeResourcesDir);
-          if (stale && stale.length > 0) {
-            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'STALE-REBUILDING' });
-            res.end(JSON.stringify({ scanDirectory: activeResourcesDir, collections: stale }));
-            return;
-          }
-          dirCollectionsCache.delete(activeResourcesDir);
-          dirMtimeCache.delete(activeResourcesDir);
-          dirImagesCache.delete(activeResourcesDir);
-          dirImagesMtimeCache.delete(activeResourcesDir);
         }
 
-        // Full scan（仅内存中完全没有可用列表时才会走到这里）
-        const collections = scanCollectionsSync(activeResourcesDir);
+        if (collections === null) {
+          // Full scan（仅内存中完全没有可用列表时才会走到这里）
+          collections = scanCollectionsSync(activeResourcesDir);
 
-        dirCollectionsCache.set(activeResourcesDir, collections);
-        try { dirMtimeCache.set(activeResourcesDir, fs.statSync(activeResourcesDir).mtimeMs); }
-        catch { dirMtimeCache.set(activeResourcesDir, Date.now()); }
+          dirCollectionsCache.set(activeResourcesDir, collections);
+          try { dirMtimeCache.set(activeResourcesDir, fs.statSync(activeResourcesDir).mtimeMs); }
+          catch { dirMtimeCache.set(activeResourcesDir, Date.now()); }
 
-        const dirImgs = dirImagesCache.get(activeResourcesDir) || new Map();
-        savePersistentCache(activeResourcesDir, collections, dirImgs);
+          const dirImgs = dirImagesCache.get(activeResourcesDir) || new Map();
+          savePersistentCache(activeResourcesDir, collections, dirImgs);
+          source = 'REBUILT';
+        }
 
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'REBUILT' });
-        res.end(JSON.stringify({ scanDirectory: activeResourcesDir, collections }));
+        let outCollections = collections;
+        if (wantExpand) {
+          const cached = igExpandCache.get(activeResourcesDir);
+          const filterMatch = cached && cached.postDays === postDays
+            && cached.dlDays === dlDays && cached.person === personParam;
+          if (stale && cached) {
+            // harvest 进行中：不在请求路径重算（会放大写放大），先用上次展开结果
+            outCollections = cached.list;
+            source += '+EXPANDED-STALE';
+          } else if (!stale && filterMatch && expansionCacheUsable(activeResourcesDir, cached.mtimes)) {
+            outCollections = cached.list;
+            source += '+EXPANDED-CACHED';
+          } else if (!stale) {
+            outCollections = computeExpandedCollections(activeResourcesDir, collections, postDays, dlDays, personParam);
+            igExpandCache.set(activeResourcesDir, {
+              postDays, dlDays, person: personParam,
+              mtimes: new Map((Array.isArray(collections) ? collections : [])
+                .map(c => [typeof c === 'string' ? c : c.name, typeof c === 'string' ? 0 : (c.mtime || 0)])),
+              list: outCollections,
+            });
+            source += '+EXPANDED';
+          }
+          // stale 且无缓存展开结果：退回原始列表（短暂降级，重扫完成后恢复）
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': source });
+        res.end(JSON.stringify({ scanDirectory: activeResourcesDir, collections: outCollections }));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));

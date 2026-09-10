@@ -213,58 +213,12 @@ export default function App() {
     }
   }, []);
 
-  // Instagram 帖子级展开：带 .posts.json 的账号（仅 IG 账号名格式会去查询，
-  // 普通文件夹不会命中）展开为 `user::postId` 虚拟图集，未归属文件 >0 时
-  // 追加 `user::__unsorted`。无 manifest 的目录原样保留——普通文件夹的
-  // 展示与播放完全不受影响。
-  // 时间范围过滤：发布范围按帖子 taken_at（无发布时间的条目会被隐藏）；
-  // 下载范围按文件落盘时间（普通文件夹的 mtime 即其下载时间，同样适用）。
-  const expandInstagramPosts = async (collections) => {
-    const now = Date.now();
-    const dayMs = 86400000;
-    const postCutoff = recentPostDays > 0 ? now - recentPostDays * dayMs : null;
-    const dlCutoff = recentDlDays > 0 ? now - recentDlDays * dayMs : null;
-    // 无发布时间的条目（普通文件夹/无清单账号）：发布过滤开启时隐藏，否则只受下载过滤约束
-    const keepUntimed = (c) => {
-      if (postCutoff !== null) return;
-      if (!dlCutoff || (c?.mtime || 0) >= dlCutoff) out.push(c);
-    };
-    const out = [];
-    await Promise.all(collections.map(async (c) => {
-      if (!c || !/^[A-Za-z0-9._]{1,30}$/.test(c.name || '')) { keepUntimed(c); return; }
-      try {
-        const res = await fetch(`/api/collection/posts?collection=${encodeURIComponent(c.name)}`);
-        if (!res.ok) { keepUntimed(c); return; }
-        const data = await res.json();
-        const posts = (Array.isArray(data.posts) ? data.posts : []).filter(p => {
-          if (postCutoff !== null && (!p.ts || p.ts * 1000 < postCutoff)) return false;
-          if (dlCutoff !== null && (!p.dl || p.dl < dlCutoff)) return false;
-          if (personFilter === '1' && (p.np || 0) === 0) return false;
-          if (personFilter === '0' && (p.nn || 0) === 0) return false;
-          return true;
-        });
-        if (!posts.length && (postCutoff !== null || personFilter !== '-')) return; // 过滤下无合格帖子：整账号跳过
-        if (!posts.length) { out.push(c); return; }
-        for (const p of posts) {
-          out.push({ name: `${c.name}::${p.id}`, mtime: (p.ts || 0) * 1000 });
-        }
-        const pParam = personFilter !== '-' ? `&person=${encodeURIComponent(personFilter)}` : '';
-        const ires = await fetch(`/api/collection/images?collection=${encodeURIComponent(c.name)}${pParam}`);
-        if (ires.ok) {
-          const idata = await ires.json();
-          const inPosts = new Set(posts.flatMap(p => p.media || []));
-          const leftovers = (idata.images || []).filter(f => !inPosts.has(f));
-          // 未归类条目无发布时间：发布过滤开启时不显示
-          if (leftovers.length && postCutoff === null && (!dlCutoff || (c.mtime || 0) >= dlCutoff)) {
-            out.push({ name: `${c.name}::__unsorted`, mtime: c.mtime });
-          }
-        }
-      } catch { keepUntimed(c); }
-    }));
-    return out;
-  };
-
   // Fetch collections from API
+  // IG 帖子级展开已在服务端一次完成（expand=ig）：带 .posts.json 的账号展开为
+  // `user::postId` 虚拟图集、未归属文件 >0 时追加 `user::__unsorted`，无 manifest
+  // 的目录原样保留；发布/下载/人像过滤参数同步下发，在服务端展开时应用。
+  // 原逐账号 posts+images 的 ~850 请求扇出已移除——过反代时逐请求叠加 RTT，
+  // 是首屏打开慢的主因。
   const fetchCollections = async () => {
     try {
       // Only show loader if we have no cached collections to prevent full-screen spinner on refresh
@@ -272,10 +226,16 @@ export default function App() {
         setIsLoading(true);
       }
       setFetchError('');
-      const data = await safeFetchJSON('/api/collections');
+      const params = new URLSearchParams({
+        expand: 'ig',
+        postDays: String(recentPostDays || 0),
+        dlDays: String(recentDlDays || 0),
+        person: personFilter || '-',
+      });
+      const data = await safeFetchJSON(`/api/collections?${params.toString()}`);
 
       const nextScanDirectory = data.scanDirectory || '';
-      const nextCollections = await expandInstagramPosts(data.collections || []);
+      const nextCollections = Array.isArray(data.collections) ? data.collections : [];
 
       // 过滤目标账号已被删除/清空时自动回落到全部图集
       if (accountFilter.length &&
