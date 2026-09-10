@@ -1021,10 +1021,18 @@ export function createApiHandler() {
             source += '+EXPANDED-CACHED';
           } else if (!stale) {
             outCollections = computeExpandedCollections(activeResourcesDir, collections, postDays, dlDays, personParam);
+            // 基线用目录自身 mtime（与 expansionCacheUsable 的比对口径一致；
+            // harvest 新增文件/manifest 更新都会改变目录 mtime，可被检出）
+            const mtimes = new Map();
+            try {
+              for (const it of fs.readdirSync(activeResourcesDir, { withFileTypes: true })) {
+                if (!it.isDirectory() || it.name.startsWith('.')) continue;
+                try { mtimes.set(it.name, fs.statSync(path.join(activeResourcesDir, it.name)).mtimeMs); } catch {}
+              }
+            } catch {}
             igExpandCache.set(activeResourcesDir, {
               postDays, dlDays, person: personParam,
-              mtimes: new Map((Array.isArray(collections) ? collections : [])
-                .map(c => [typeof c === 'string' ? c : c.name, typeof c === 'string' ? 0 : (c.mtime || 0)])),
+              mtimes,
               list: outCollections,
             });
             source += '+EXPANDED';
