@@ -306,6 +306,7 @@ export default function MobileSlideshowCard({
           setActiveIdx(startIdx);
           setOutgoingIdx(null);
           applyLoadingState(false);
+          restartAutoChain();
           if (newImages.length > 0) {
             detectAspectRatio(currentCollName, newImages[0]);
             setTimeout(() => preloadImages(startIdx + 1, PRELOAD_COUNT), 1000);
@@ -435,6 +436,26 @@ export default function MobileSlideshowCard({
     setTimeout(() => setProgressBarReset(false), 20);
   };
 
+  // 切换重锚：自动轮播间隔从"上一次实际切换"起算。旧实现固定 interval 心跳
+  // 与"加载完成即切换"双驱动脱节，迟到的切换会被紧跟的 tick 立刻切走
+  // （1~2 秒间隔下图片只显示零点几秒）。每次实际切换后重启 interval，
+  // 结构上保证每张至少显示完整设定时长，网络慢时宁长勿闪。
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
+  const isPlayingRef = useRef(false);
+  isPlayingRef.current = globalIsPlaying && localIsPlaying;
+  const isSyncModeRef = useRef(isSyncMode);
+  isSyncModeRef.current = isSyncMode;
+  const advanceSlideRef = useRef(null);
+  const restartAutoChain = () => {
+    if (isSyncModeRef.current || !isPlayingRef.current) return;
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      if (!isPlayingRef.current) return;
+      if (advanceSlideRef.current) advanceSlideRef.current(1);
+    }, durationRef.current);
+  };
+
   useEffect(() => {
     if (staggerAppliedRef.current || totalTiles <= 1) {
       setBarDuration(duration);
@@ -462,12 +483,13 @@ export default function MobileSlideshowCard({
       prevSyncTriggerRef.current = syncTrigger;
       if (isSyncTick && isPlaying && activeIdx >= 0 && imagesRef.current.length > 0) {
         advanceSlide(1);
-        resetProgressBar();
       }
       return;
     }
 
-    // Async mode: original staggered setInterval logic (unchanged)
+    // Async mode：固定间隔 tick 推进；实际切换发生时 restartAutoChain 已把
+    // 间隔重锚到切换时刻。没切换（加载在途/目录加载中）时本次 tick 为空转，
+    // 下个 tick 继续——不会提前切走任何画面。
     if (isPlaying) {
       const staggerDelay = tileId * (globalSpeed / totalTiles);
       if (!staggerAppliedRef.current && totalTiles > 1 && staggerDelay > 0) {
@@ -478,18 +500,17 @@ export default function MobileSlideshowCard({
           staggerAppliedRef.current = true;
           advanceSlide(1);
           setBarDuration(duration);
-          resetProgressBar();
 
           timerRef.current = setInterval(() => {
+            if (!isPlayingRef.current) return;
             advanceSlide(1);
-            resetProgressBar();
           }, duration);
         }, staggerDelay);
       } else {
         setBarDuration(duration);
         timerRef.current = setInterval(() => {
+          if (!isPlayingRef.current) return;
           advanceSlide(1);
-          resetProgressBar();
         }, duration);
       }
     }
@@ -539,6 +560,7 @@ export default function MobileSlideshowCard({
       if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
       resetProgressBar();
+      restartAutoChain();
       scheduleOutgoingClear();
       preloadImages(nextIdx + 1, PRELOAD_COUNT);
       return;
@@ -553,6 +575,7 @@ export default function MobileSlideshowCard({
       if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
       resetProgressBar();
+      restartAutoChain();
       scheduleOutgoingClear();
       preloadImages(nextIdx + 1, PRELOAD_COUNT);
       return;
@@ -577,6 +600,7 @@ export default function MobileSlideshowCard({
       if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
       resetProgressBar();
+      restartAutoChain();
       scheduleOutgoingClear();
       preloadImages(nextIdx + 1, PRELOAD_COUNT);
     };
@@ -662,6 +686,8 @@ export default function MobileSlideshowCard({
 
     preloadAndAdvance(nextIdx, currentCollNameVal, currentIdx);
   };
+  // 切换重锚链需要经 ref 调用 advanceSlide（restartAutoChain 定义在其之前）
+  advanceSlideRef.current = advanceSlide;
 
   const skipToNextCollection = (direction = 1) => {
     // Try the session-level remaining queue first (never-repeats)

@@ -309,7 +309,9 @@ export default function DesktopLayout({
                   left: `${position.left}px`,
                   top: `${position.top}px`,
                   width: `${position.width}px`,
-                  height: `${position.height}px`
+                  height: `${position.height}px`,
+                  // 宽高比不同的图切换时瓦片尺寸会跳变，短过渡软化观感
+                  transition: 'width 0.2s ease, height 0.2s ease'
                 }}
               >
                 <ErrorBoundary fallbackLabel="该窗口出现异常">

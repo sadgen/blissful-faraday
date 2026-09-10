@@ -81,6 +81,8 @@ const SlideshowTile = forwardRef(function SlideshowTile({
   const displayedCollectionsRef = useRef(displayedCollections);
   const sortMethodRef = useRef(sortMethod);
   const hasReportedReadyRef = useRef(false);
+  // 实际切换通知桥：preloader 在切换点调用 → playback hook 重锚计时/重置进度条
+  const slideSwitchedRef = useRef(null);
   useEffect(() => { currentCollNameRef.current = currentCollName; }, [currentCollName]);
   useEffect(() => { collectionsRef.current = collections; }, [collections]);
   useEffect(() => { displayedCollectionsRef.current = displayedCollections; }, [displayedCollections]);
@@ -108,6 +110,7 @@ const SlideshowTile = forwardRef(function SlideshowTile({
     collections,
     imageSort,
     personFilter,
+    slideSwitchedRef,
   });
 
   // 播放历史回退的稳定代理（historyBack 在下方播放历史区才定义，
@@ -158,6 +161,7 @@ const SlideshowTile = forwardRef(function SlideshowTile({
     onRequestNextCollection,
     onStepBeforeStart,
     isLoadingRef,
+    slideSwitchedRef,
   });
 
   // 人像状态一键翻转：当前图片如果是人像转非人像，是非人像转人像（仅对该图生效）

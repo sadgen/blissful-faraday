@@ -23,6 +23,7 @@ export default function useImagePreloader({
   collections,
   imageSort = 'name',
   personFilter = '-',
+  slideSwitchedRef,
 }) {
   const [images, setImages] = useState([]);
   // images 数组当前归属的图集名。切集加载期间 currentCollName 已变而 images 还是
@@ -87,6 +88,11 @@ export default function useImagePreloader({
   // Sync refs
   useEffect(() => { activeIdxRef.current = activeIdx; }, [activeIdx]);
   useEffect(() => { imagesRef.current = images; }, [images]);
+
+  // 实际切换通知：每个真实"画面已切到新帧"的点调用，供播放链重锚计时/重置进度条
+  const notifySlideSwitched = useCallback(() => {
+    if (slideSwitchedRef && slideSwitchedRef.current) slideSwitchedRef.current();
+  }, [slideSwitchedRef]);
 
   // Notify parent of aspect ratio change
   useEffect(() => {
@@ -272,6 +278,7 @@ export default function useImagePreloader({
             setActiveIdx(startIdx);
             setOutgoingIdx(null);
             applyLoadingState(false);
+            notifySlideSwitched();
             preloadImages(startIdx + 1, PRELOAD_COUNT);
           };
 
@@ -360,6 +367,7 @@ export default function useImagePreloader({
       if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
       scheduleOutgoingClear();
+      notifySlideSwitched();
       preloadImages(nextIdx + 1, PRELOAD_COUNT);
       return;
     }
@@ -373,6 +381,7 @@ export default function useImagePreloader({
       if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
       scheduleOutgoingClear();
+      notifySlideSwitched();
       preloadImages(nextIdx + 1, PRELOAD_COUNT);
       return;
     }
@@ -396,6 +405,7 @@ export default function useImagePreloader({
       if (outgoingIdx !== undefined) setOutgoingIdx(outgoingIdx);
       setActiveIdx(nextIdx);
       scheduleOutgoingClear();
+      notifySlideSwitched();
       preloadImages(nextIdx + 1, PRELOAD_COUNT);
     };
     const loadFull = () => {

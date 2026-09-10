@@ -32,6 +32,7 @@ export default function useSlideshowPlayback({
   onRequestNextCollection,
   onStepBeforeStart,
   isLoadingRef,
+  slideSwitchedRef,
 }) {
   const [localIsPlaying, setLocalIsPlaying] = useState(true);
   const [localSpeedMult, setLocalSpeedMult] = useState(1);
@@ -46,6 +47,36 @@ export default function useSlideshowPlayback({
   const lastWheelTimeRef = useRef(0);
   const wheelPauseTimeoutRef = useRef(null);
   const prevSyncTriggerRef = useRef(syncTrigger);
+  // 切换锚定：自动轮播的间隔从"上一次实际切换"起算，而不是固定心跳。
+  // 旧实现定时器按固定周期空转、图片却在"加载完成事件"里随机时刻切换，
+  // 迟到的切换会被很快到来的下一个 tick 立刻切走（1~2 秒间隔下图片只显示
+  // 零点几秒）。现在每次实际切换都重启计时链，结构上保证每张至少显示
+  // 完整设定时长；网络慢时宁长勿闪，预载跟得上时节奏精准。
+  const switchCountRef = useRef(0);
+  const durationRef = useRef(globalSpeed / 1);
+  durationRef.current = globalSpeed / Math.max(0.1, localSpeedMult);
+  const isPlayingRef = useRef(false);
+  isPlayingRef.current = globalIsPlaying && localIsPlaying && !isWheelPaused;
+  const isSyncModeRef = useRef(isSyncMode);
+  isSyncModeRef.current = isSyncMode;
+  const tickRef = useRef(null);
+
+  // 重锚自动推进链：清掉现有定时，从现在起算一个完整间隔后推进
+  const scheduleChain = useCallback((delay) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => { tickRef.current && tickRef.current(); }, delay);
+  }, []);
+
+  // 实际切换完成回调（由 useImagePreloader 在每个真实切换点调用）
+  const handleSlideSwitched = useCallback(() => {
+    switchCountRef.current++;
+    resetProgressBarRef.current();
+    // 同步模式由父级 tick 统一驱动，不单独重锚；暂停时不排程
+    if (!isSyncModeRef.current && isPlayingRef.current) {
+      scheduleChain(durationRef.current);
+    }
+  }, [scheduleChain]);
+  if (slideSwitchedRef) slideSwitchedRef.current = handleSlideSwitched;
 
   const transitionEffect = localTransitionEffect || globalTransitionEffect || 'none';
 
@@ -263,7 +294,7 @@ export default function useSlideshowPlayback({
     }
   }, [collections, currentCollName, initialCollectionName, selectRandomCollection]);
 
-  // --- Staggered recursive setTimeout playback ---
+  // --- Staggered playback chain (re-anchored on every actual switch) ---
 
   useEffect(() => {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
@@ -279,7 +310,6 @@ export default function useSlideshowPlayback({
           prevSyncTriggerRef.current = syncTrigger - 1;
         } else {
           advanceSlideRef.current(1);
-          resetProgressBarRef.current();
         }
       } else if (isSyncTick && !isPlaying) {
         // Images not ready (or wheel-paused) — roll back the ref so the
@@ -290,19 +320,22 @@ export default function useSlideshowPlayback({
       return;
     }
 
-    // Async mode: original per-tile timer logic (unchanged)
-    let targetTime = Date.now() + duration;
+    // Async mode：tick 推进一次；实际切换发生时 handleSlideSwitched 已把链
+    // 重锚到"切换时刻+完整间隔"。没切换（加载在途/目录加载中）时短轮询等
+    // 待，真正的切换完成后自然回到满间隔节奏。
+    const tick = () => {
+      if (!isPlayingRef.current) return;
+      const before = switchCountRef.current;
+      advanceSlideRef.current(1);
+      if (switchCountRef.current === before) {
+        scheduleChain(300);
+      }
+      // 发生了切换：handleSlideSwitched 已经 scheduleChain(duration)
+    };
+
+    tickRef.current = tick;
 
     if (isPlaying) {
-      const scheduleNext = () => {
-        advanceSlideRef.current(1);
-        resetProgressBarRef.current();
-        const elapsed = Date.now() - targetTime;
-        const nextDelay = Math.max(0, duration - elapsed);
-        targetTime += duration;
-        timerRef.current = setTimeout(scheduleNext, nextDelay);
-      };
-
       const staggerDelay = tileId * (globalSpeed / totalTiles);
       if (!staggerAppliedRef.current && totalTiles > 1 && staggerDelay > 0) {
         setBarDuration(staggerDelay);
@@ -310,13 +343,11 @@ export default function useSlideshowPlayback({
           staggerAppliedRef.current = true;
           advanceSlideRef.current(1);
           setBarDuration(duration);
-          targetTime = Date.now() + duration;
-          timerRef.current = setTimeout(scheduleNext, duration);
+          scheduleChain(duration);
         }, staggerDelay);
       } else {
         setBarDuration(duration);
-        targetTime = Date.now() + duration;
-        timerRef.current = setTimeout(scheduleNext, duration);
+        scheduleChain(duration);
       }
     }
 
@@ -324,7 +355,7 @@ export default function useSlideshowPlayback({
       if (timerRef.current) clearTimeout(timerRef.current);
       if (staggerTimeoutRef.current) clearTimeout(staggerTimeoutRef.current);
     };
-  }, [isSyncMode, syncTrigger, isPlaying, duration, totalTiles, tileId, globalSpeed]);
+  }, [isSyncMode, syncTrigger, isPlaying, duration, totalTiles, tileId, globalSpeed, scheduleChain]);
 
   // --- handleCollectionChange ---
 
