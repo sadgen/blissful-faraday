@@ -94,8 +94,14 @@ export default function App() {
   // 时间范围过滤（0 = 全部）：发布按帖子 taken_at，下载按文件落盘时间
   const [recentPostDays, setRecentPostDays] = useState(savedConfig?.recentPostDays || 0);
   const [recentDlDays, setRecentDlDays] = useState(savedConfig?.recentDlDays || 0);
+  // 人像三态过滤：'-' = 不筛选，'1' = 是人像，'0' = 否（非人像）
+  const [personFilter, setPersonFilter] = useState(savedConfig?.personFilter || '-');
   // 账号过滤：只播放某个 Instagram 账号的帖子（'' = 全部图集）
-  const [accountFilter, setAccountFilter] = useState(savedConfig?.accountFilter || '');
+  const [accountFilter, setAccountFilter] = useState(() => {
+    const saved = savedConfig?.accountFilter;
+    if (Array.isArray(saved)) return saved;
+    return saved ? [saved] : []; // 旧版单选字符串迁移为多选数组
+  });
 
   // Track page visibility to pause/resume slideshow when tab is inactive/active
   const [isDocumentVisible, setIsDocumentVisible] = useState(document.visibilityState === 'visible');
@@ -233,14 +239,17 @@ export default function App() {
         const posts = (Array.isArray(data.posts) ? data.posts : []).filter(p => {
           if (postCutoff !== null && (!p.ts || p.ts * 1000 < postCutoff)) return false;
           if (dlCutoff !== null && (!p.dl || p.dl < dlCutoff)) return false;
+          if (personFilter === '1' && (p.np || 0) === 0) return false;
+          if (personFilter === '0' && (p.nn || 0) === 0) return false;
           return true;
         });
-        if (!posts.length && postCutoff !== null) return; // 发布过滤下无合格帖子：整个账号隐藏
+        if (!posts.length && (postCutoff !== null || personFilter !== '-')) return; // 过滤下无合格帖子：整账号跳过
         if (!posts.length) { out.push(c); return; }
         for (const p of posts) {
           out.push({ name: `${c.name}::${p.id}`, mtime: (p.ts || 0) * 1000 });
         }
-        const ires = await fetch(`/api/collection/images?collection=${encodeURIComponent(c.name)}`);
+        const pParam = personFilter !== '-' ? `&person=${encodeURIComponent(personFilter)}` : '';
+        const ires = await fetch(`/api/collection/images?collection=${encodeURIComponent(c.name)}${pParam}`);
         if (ires.ok) {
           const idata = await ires.json();
           const inPosts = new Set(posts.flatMap(p => p.media || []));
@@ -269,9 +278,10 @@ export default function App() {
       const nextCollections = await expandInstagramPosts(data.collections || []);
 
       // 过滤目标账号已被删除/清空时自动回落到全部图集
-      if (accountFilter &&
-          !nextCollections.some(c => c.name === accountFilter || String(c.name || '').startsWith(`${accountFilter}::`))) {
-        setAccountFilter('');
+      if (accountFilter.length &&
+          !nextCollections.some(c => accountFilter.some(u =>
+            c.name === u || String(c.name || '').startsWith(`${u}::`)))) {
+        setAccountFilter([]);
       }
 
       setRawCollections(nextCollections);
@@ -420,9 +430,9 @@ export default function App() {
 
     const items = [...rawCollections];
 
-    // 账号过滤：只保留该账号的帖子图集（user::postId / user::__unsorted / 无清单账号本体）
-    const filtered = accountFilter
-      ? items.filter(c => c.name === accountFilter || String(c.name || '').startsWith(`${accountFilter}::`))
+    // 账号过滤：只保留勾选账号的帖子图集（user::postId / user::__unsorted / 无清单账号本体）
+    const filtered = accountFilter.length
+      ? items.filter(c => accountFilter.some(u => c.name === u || String(c.name || '').startsWith(`${u}::`)))
       : items;
 
     let result;
@@ -462,10 +472,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountFilter]);
 
-  // 点击账号名：同账号再点一次取消过滤
+  // 点击账号名：多选切换（已勾选则取消，未勾选则加入）
   const handleSelectAccount = useCallback((username) => {
     if (!username) return;
-    setAccountFilter(prev => (prev === username ? '' : username));
+    setAccountFilter(prev => {
+      const list = Array.isArray(prev) ? prev : (prev ? [prev] : []);
+      return list.includes(username) ? list.filter(u => u !== username) : [...list, username];
+    });
   }, []);
 
   useEffect(() => {
@@ -509,19 +522,20 @@ export default function App() {
       imageSort,
       recentPostDays,
       recentDlDays,
-      accountFilter
+      accountFilter,
+      personFilter,
     };
     try {
       localStorage.setItem('blissfulFaradayConfig', JSON.stringify(config));
     } catch (err) {
       console.warn('Failed to save config:', err);
     }
-  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, isSyncMode, sortMethod, isAutoTiling, zoomScale, videoSpeed, imageSort, recentPostDays, recentDlDays, accountFilter]);
+  }, [tileCount, globalSpeed, globalIsPlaying, globalTransitionEffect, isSyncMode, sortMethod, isAutoTiling, zoomScale, videoSpeed, imageSort, recentPostDays, recentDlDays, accountFilter, personFilter]);
 
-  // 时间范围过滤变化时重新拉取图集列表
+  // 范围/人像过滤变化时重新拉取图集列表
   useEffect(() => {
     fetchCollections();
-  }, [recentPostDays, recentDlDays]);
+  }, [recentPostDays, recentDlDays, personFilter]);
 
   // Get current grid config
   const gridConfig = GRID_PRESETS[tileCount] || GRID_PRESETS[1];
@@ -1065,6 +1079,8 @@ export default function App() {
           setRecentPostDays={setRecentPostDays}
           recentDlDays={recentDlDays}
           setRecentDlDays={setRecentDlDays}
+          personFilter={personFilter}
+          setPersonFilter={setPersonFilter}
           accountFilter={accountFilter}
           setAccountFilter={setAccountFilter}
           onSelectAccount={handleSelectAccount}
@@ -1146,6 +1162,8 @@ export default function App() {
       setRecentPostDays={setRecentPostDays}
       recentDlDays={recentDlDays}
       setRecentDlDays={setRecentDlDays}
+      personFilter={personFilter}
+      setPersonFilter={setPersonFilter}
       accountFilter={accountFilter}
       setAccountFilter={setAccountFilter}
       onSelectAccount={handleSelectAccount}

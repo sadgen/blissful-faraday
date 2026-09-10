@@ -1,14 +1,15 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
   Play, Pause, ChevronRight, ChevronLeft,
-  Maximize2, Minimize2, Settings, Shuffle, HelpCircle, Trash2, Images
+  Maximize2, Minimize2, Settings, Shuffle, HelpCircle,
+  Undo2, Redo2, UserCheck, UserX
 } from 'lucide-react';
 import { isVideoFile, prettyCollectionName, accountOf } from '../utils/imageHelpers';
 import useImagePreloader from '../hooks/useImagePreloader';
 import useSlideshowPlayback from '../hooks/useSlideshowPlayback';
 import useTileDrag from '../hooks/useTileDrag';
 
-export default function SlideshowTile({
+const SlideshowTile = forwardRef(function SlideshowTile({
   tileId,
   collections,
   displayedCollections,
@@ -36,18 +37,22 @@ export default function SlideshowTile({
   onQueueDelete,
   accountFilter = '',
   onSelectAccount,
-}) {
+  personFilter = '-',
+}, ref) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [isMaximized, setIsMaximized] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
 
   // Collection info (Instagram username + full_name)
   const [collectionInfo, setCollectionInfo] = useState(null);
-  const [isDeleting, setIsDeleting] = useState(false);
+  // 当前图集的人像元数据（文件名 -> { p: 0|1, s, manual }）
+  const [personMeta, setPersonMeta] = useState({});
+  const [isTogglingPerson, setIsTogglingPerson] = useState(false);
 
   useEffect(() => {
     if (!currentCollName) {
       setCollectionInfo(null);
+      setPersonMeta({});
       return;
     }
     let cancelled = false;
@@ -58,6 +63,14 @@ export default function SlideshowTile({
       })
       .catch(() => {
         if (!cancelled) setCollectionInfo(null);
+      });
+    fetch(`/api/person/meta?collection=${encodeURIComponent(currentCollName)}`)
+      .then(res => res.json())
+      .then(data => {
+        if (!cancelled && data && data.media) setPersonMeta(data.media);
+      })
+      .catch(() => {
+        if (!cancelled) setPersonMeta({});
       });
     return () => { cancelled = true; };
   }, [currentCollName]);
@@ -82,7 +95,7 @@ export default function SlideshowTile({
   const {
     images, setImages, imagesColl, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
     isLoadingImages, isLoadingRef, loadError, postIndex, holdFrame,
-    imagesRef, activeIdxRef, shouldStartFromLastRef,
+    imagesRef, activeIdxRef, shouldStartFromLastRef, pendingStartRef,
     preloadAndAdvance,
     videoFileNames,
   } = useImagePreloader({
@@ -94,7 +107,16 @@ export default function SlideshowTile({
     onAspectRatioChange,
     collections,
     imageSort,
+    personFilter,
   });
+
+  // 播放历史回退的稳定代理（historyBack 在下方播放历史区才定义，
+  // hook 调用顺序要求这里先传入稳定标识，实际实现经 ref 间接调用）
+  const onStepBeforeStartRef = useRef(null);
+  const onStepBeforeStart = useCallback(() => {
+    const f = onStepBeforeStartRef.current;
+    return f ? f() : false;
+  }, []);
 
   // --- Hook 2: Playback ---
   const {
@@ -134,10 +156,12 @@ export default function SlideshowTile({
     isSyncMode,
     syncTrigger,
     onRequestNextCollection,
+    onStepBeforeStart,
     isLoadingRef,
   });
 
-  const handleDelete = (e) => {
+  // 人像状态一键翻转：当前图片如果是人像转非人像，是非人像转人像（仅对该图生效）
+  const handleTogglePerson = async (e) => {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -145,38 +169,36 @@ export default function SlideshowTile({
     if (images.length === 0 || activeIdx < 0 || activeIdx >= images.length) return;
     const currentMediaName = images[activeIdx];
     const currentColl = currentCollName;
-    const currentIdx = activeIdx;
-    const isVideo = isVideoFile(currentMediaName) || videoFileNames.has(currentMediaName);
-    const isLastMedia = images.length <= 1;
-
-    if (isLastMedia) {
-      skipToNextCollection(1);
-    } else {
-      removeImage(currentMediaName);
-      if (activeIdx >= images.length - 1) {
-        setActiveIdx(Math.max(0, images.length - 2));
-      }
-      setOutgoingIdx(null);
-    }
-
-    if (onQueueDelete) {
-      onQueueDelete({
-        collection: currentColl,
-        name: currentMediaName,
-        isVideo,
-        isLastMedia,
-        onUndo: () => {
-          if (isLastMedia) {
-            setCurrentCollName(currentColl);
-            if (onCollectionChange) onCollectionChange(tileId, currentColl);
+    if (!currentMediaName || !currentColl || isTogglingPerson) return;
+    setIsTogglingPerson(true);
+    try {
+      const res = await fetch(`/api/person/toggle?collection=${encodeURIComponent(currentColl)}&name=${encodeURIComponent(currentMediaName)}`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (data && data.success) {
+        setPersonMeta(prev => ({
+          ...prev,
+          [currentMediaName]: { p: data.p, s: data.s, manual: true },
+        }));
+        // 联动：如果当前处于"是/否"过滤模式，翻转导致该图不符模式，立即移出播放并步进下一张
+        const shouldEject = (personFilter === '1' && data.p === 0) || (personFilter === '0' && data.p === 1);
+        if (shouldEject) {
+          if (images.length <= 1) {
+            skipToNextCollection(1);
           } else {
-            if (currentCollName === currentColl) {
-              restoreImage(currentMediaName, currentIdx);
-              setActiveIdx(currentIdx);
+            removeImage(currentMediaName);
+            if (activeIdx >= images.length - 1) {
+              setActiveIdx(Math.max(0, images.length - 2));
             }
+            setOutgoingIdx(null);
           }
         }
-      });
+      }
+    } catch (err) {
+      console.warn('Failed to toggle person status:', err);
+    } finally {
+      setIsTogglingPerson(false);
     }
   };
 
@@ -258,60 +280,102 @@ export default function SlideshowTile({
 
   // 当前媒体的帖子信息（IG 账号图集才有）：第 x/y 帖 + caption
   const activePostInfo = postIndex && images[activeIdx] ? postIndex.get(images[activeIdx]) : null;
-  // 当前帖子在播放队列里的文件数（用于删帖按钮的提示文案）
-  const activePostFileCount = activePostInfo
-    ? images.filter(f => postIndex.get(f)?.postId === activePostInfo.postId).length
-    : 0;
 
-  // 删除整个帖子：按帖子索引找出该帖全部文件，一次提交撤销任务（10 秒后按 postId 整帖落盘删除）
-  const handleDeletePost = (e) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-    if (!activePostInfo || !postIndex) return;
-    const postFiles = images.filter(f => postIndex.get(f)?.postId === activePostInfo.postId);
-    if (!postFiles.length) return;
-    const snapshot = images.slice();
-    const coll = currentCollName;
-    const isWholeColl = postFiles.length >= images.length;
+  // ─── 播放历史（回退/前进）────────────────────────────────────────────────
+  // 随机播放切换快、且切到新图集后"上一张"回不去：这里把每一帧实际显示过的
+  // {图集, 文件} 压栈，回退时精确跳回前一帧（可跨图集），前进则重放回退掉的帧
+  const historyRef = useRef([]);        // 已播放序列（栈顶 = 当前帧）
+  const historyFwdRef = useRef([]);     // 回退掉待前进重放的帧
+  const isHistJumpRef = useRef(false);  // 回跳落地的那帧不重复压栈
 
-    if (isWholeColl) {
-      skipToNextCollection(1);
-    } else {
-      postFiles.forEach(f => removeImage(f));
-      const firstIdx = images.indexOf(postFiles[0]);
-      setActiveIdx(Math.max(0, Math.min(firstIdx, images.length - postFiles.length - 1)));
-      setOutgoingIdx(null);
+  // 记录当前实际显示帧（imagesColl+images[activeIdx] 才是真实画面归属）
+  useEffect(() => {
+    const coll = imagesColl;
+    const name = images[activeIdx];
+    if (!coll || !name) return;
+    if (isHistJumpRef.current) { isHistJumpRef.current = false; return; }
+    const h = historyRef.current;
+    const top = h[h.length - 1];
+    if (top && top.coll === coll && top.name === name) return;
+    // 回退重放旧帧（如多图帖从第2张退回第1张）：栈里本来就有这一帧，
+    // 弹出栈顶而不是压入——否则产生回声帧，下一次回退会立刻"弹回"刚离开的帧
+    const prev = h[h.length - 2];
+    if (prev && prev.coll === coll && prev.name === name) {
+      h.pop();
+      return;
     }
+    h.push({ coll, name });
+    if (h.length > 200) h.shift();
+    historyFwdRef.current = [];
+  }, [imagesColl, images, activeIdx]);
 
-    if (onQueueDelete) {
-      onQueueDelete({
-        collection: coll,
-        postId: activePostInfo.postId,
-        names: postFiles,
-        isVideo: false,
-        isLastMedia: isWholeColl,
-        onUndo: () => {
-          if (isWholeColl) {
-            setCurrentCollName(coll);
-            if (onCollectionChange) onCollectionChange(tileId, coll);
-            return;
-          }
-          if (currentCollNameRef.current !== coll) return;
-          // 按原顺序把帖子文件插回播放队列
-          setImages(prev => {
-            const merged = prev.filter(f => !postFiles.includes(f));
-            postFiles.forEach(f => {
-              const origIdx = snapshot.indexOf(f);
-              merged.splice(Math.min(origIdx, merged.length), 0, f);
-            });
-            return merged;
-          });
-        }
-      });
+  // 跳到历史帧：同集直接推进下标；跨集设落点后切集，由 applyImages 精确落帧。
+  // 文件已被删除（同集找不到）返回 false，调用方继续往更早找
+  const histJumpTo = useCallback((entry) => {
+    const curColl = imagesColl || currentCollName;
+    if (entry.coll === curColl) {
+      const idx = images.indexOf(entry.name);
+      if (idx < 0) return false;
+      isHistJumpRef.current = true;
+      preloadAndAdvance(idx, entry.coll, activeIdxRef.current);
+      return true;
     }
-  };
+    isHistJumpRef.current = true;
+    pendingStartRef.current = { coll: entry.coll, name: entry.name };
+    setCurrentCollName(entry.coll);
+    if (onCollectionChange) {
+      onCollectionChange(tileId, entry.coll);
+      if (displayedCollectionsRef.current) {
+        displayedCollectionsRef.current = [...displayedCollectionsRef.current];
+        displayedCollectionsRef.current[tileId] = entry.coll;
+      }
+    }
+    setOutgoingIdx(null);
+    return true;
+  }, [imagesColl, currentCollName, images, preloadAndAdvance, activeIdxRef,
+      setCurrentCollName, onCollectionChange, tileId, setOutgoingIdx, displayedCollectionsRef]);
+
+  const historyBack = useCallback(() => {
+    const h = historyRef.current;
+    if (h.length < 2) return false;
+    const cur = h.pop();
+    historyFwdRef.current.push(cur);
+    isHistJumpRef.current = true;
+    if (!histJumpTo(h[h.length - 1])) {
+      // 最近的上一帧已被删除：丢弃并继续往前找（cur 保留在前进栈里可忽略）
+      h.pop();
+      while (h.length) {
+        const prev = h[h.length - 1];
+        if (histJumpTo(prev)) return true;
+        h.pop();
+      }
+      // 没有任何可回跳的帧：复位标记，别让下一次真实记录被误吞
+      isHistJumpRef.current = false;
+      return false;
+    }
+    return true;
+  }, [histJumpTo]);
+
+  // 向上滚到图集第一张时的回退实现（见 useSlideshowPlayback 的 advanceSlide）
+  onStepBeforeStartRef.current = historyBack;
+
+  const historyForward = useCallback(() => {
+    const f = historyFwdRef.current;
+    if (!f.length) return;
+    const nxt = f.pop();
+    const curColl = imagesColl || currentCollName;
+    if (nxt.coll === curColl && !images.includes(nxt.name)) return; // 该帧文件已被删除
+    isHistJumpRef.current = true;
+    historyRef.current.push(nxt);
+    histJumpTo(nxt);
+  }, [histJumpTo, imagesColl, currentCollName, images]);
+
+  // 向 DesktopLayout 暴露当前媒体动作句柄
+  useImperativeHandle(ref, () => ({
+    togglePerson: () => handleTogglePerson(),
+    historyBack: () => historyBack(),
+    historyForward: () => historyForward(),
+  }));
 
   // --- Empty state ---
   if (collections.length === 0) {
@@ -509,12 +573,12 @@ export default function SlideshowTile({
                     </span>
                   );
                 }
-                const active = accountFilter === igAccount;
+                const active = Array.isArray(accountFilter) ? accountFilter.includes(igAccount) : accountFilter === igAccount;
                 return (
                   <span
                     onClick={(e) => { e.stopPropagation(); onSelectAccount(igAccount); }}
                     onMouseDown={(e) => e.stopPropagation()}
-                    title={active ? `取消只看 @${igAccount}` : `只播放 @${igAccount} 的帖子`}
+                    title={active ? `取消勾选 @${igAccount}` : `勾选 @${igAccount}（可多选）`}
                     style={{
                       fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                       cursor: 'pointer',
@@ -541,32 +605,36 @@ export default function SlideshowTile({
             <span style={{ opacity: 0.6, fontSize: '0.75rem', flexShrink: 0 }}>({activeIdx + 1}/{images.length})</span>
           </div>
           <div className="tile-controls-group">
-            {!isMaximized && activePostInfo && (
-              <button
-                type="button"
-                className="tile-mini-btn"
-                onClick={handleDeletePost}
-                onMouseDown={(e) => e.stopPropagation()}
-                disabled={images.length === 0}
-                title={`删除整个帖子（第 ${activePostInfo.postNo}/${activePostInfo.totalPosts} 帖，共 ${activePostFileCount} 个文件）`}
-                style={{ color: '#ef4444' }}
-              >
-                <Images size={14} />
-              </button>
-            )}
-            {!isMaximized && (
-              <button
-                type="button"
-                className="tile-mini-btn"
-                onClick={handleDelete}
-                onMouseDown={(e) => e.stopPropagation()}
-                disabled={isDeleting || images.length === 0}
-                title={images.length > 0 ? `删除当前${(isVideoFile(images[activeIdx] || '') || videoFileNames.has(images[activeIdx])) ? '视频' : '图片'}` : '删除'}
-                style={{ color: isDeleting || images.length === 0 ? 'var(--text-muted)' : '#ef4444' }}
-              >
-                <Trash2 size={14} />
-              </button>
-            )}
+            {/* 人像状态切换（取代原删除按钮）：点击一键翻转人像/非人像，仅对该图生效 */}
+            {!isMaximized && images.length > 0 && (() => {
+              const curFile = images[activeIdx];
+              const m = curFile ? personMeta[curFile] : null;
+              const isP = m ? m.p === 1 : null;
+              return (
+                <button
+                  type="button"
+                  className="tile-mini-btn"
+                  onClick={handleTogglePerson}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  disabled={isTogglingPerson}
+                  title={
+                    isP === true
+                      ? `当前已识别为人像${m?.manual ? '（已手动纠偏）' : ''}（点击转为非人像）`
+                      : (isP === false
+                          ? `当前为非人像${m?.manual ? '（已手动纠偏）' : ''}（点击转为人像）`
+                          : '人像未识别（点击强制标记为人像）')
+                  }
+                  style={{
+                    color: isP === true ? '#c084fc' : (isP === false ? '#94a3b8' : 'rgba(255,255,255,0.4)'),
+                    background: isP === true ? 'rgba(168, 85, 247, 0.15)' : 'transparent',
+                    border: isP === true ? '1px solid rgba(168, 85, 247, 0.4)' : '1px solid transparent',
+                    borderRadius: 4,
+                  }}
+                >
+                  {isP === true ? <UserCheck size={14} /> : <UserX size={14} />}
+                </button>
+              );
+            })()}
             <button className="tile-mini-btn" onClick={() => setShowConfig(!showConfig)} title="本窗口设置">
               <Settings size={14} style={{ transform: showConfig ? 'rotate(45deg)' : 'none', transition: 'transform 0.3s' }} />
             </button>
@@ -646,6 +714,12 @@ export default function SlideshowTile({
         {/* Footer Controls */}
         <div className="tile-footer">
           <div className="tile-controls-group">
+            <button className="tile-mini-btn" onClick={historyBack} title="回退到之前播放的画面（← 键，可跨图集）">
+              <Undo2 size={14} />
+            </button>
+            <button className="tile-mini-btn" onClick={historyForward} title="前进到回退前的画面（→ 键）">
+              <Redo2 size={14} />
+            </button>
             <button className="tile-mini-btn" onClick={() => advanceSlide(-1)} title="上一张">
               <ChevronLeft size={16} />
             </button>
@@ -664,4 +738,6 @@ export default function SlideshowTile({
       </div>
     </div>
   );
-}
+});
+
+export default SlideshowTile;

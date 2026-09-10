@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Pause, X, ChevronRight, ChevronLeft, Maximize2, Minimize2, Settings, Trash2, Shuffle, Images } from 'lucide-react';
+import { Play, Pause, X, ChevronRight, ChevronLeft, Maximize2, Minimize2, Settings, Shuffle, UserCheck, UserX } from 'lucide-react';
 import { isVideoFile, getImageDimensions, prettyCollectionName, accountOf } from '../utils/imageHelpers';
 
 export default function MobileSlideshowCard({
@@ -26,8 +26,9 @@ export default function MobileSlideshowCard({
   fetchCollections,
   onRequestNextCollection,
   onQueueDelete,
-  accountFilter = '',
+  accountFilter = [],
   onSelectAccount,
+  personFilter = '-',
 }) {
   const [currentCollName, setCurrentCollName] = useState(initialCollectionName || '');
   const [images, setImages] = useState([]);
@@ -41,10 +42,11 @@ export default function MobileSlideshowCard({
   const [progressBarReset, setProgressBarReset] = useState(false);
   // Overlay controls
   const [collectionInfo, setCollectionInfo] = useState(null);
-  const [isDeleting, setIsDeleting] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   // Instagram 帖子索引：filename -> { postNo, totalPosts, caption }；非 IG 图集为 null
   const [postIndex, setPostIndex] = useState(null);
+  const [personMeta, setPersonMeta] = useState({});
+  const [isTogglingPerson, setIsTogglingPerson] = useState(false);
   const videoFileNamesRef = useRef(new Set());
   const videoFileNames = videoFileNamesRef.current;
   
@@ -81,14 +83,22 @@ export default function MobileSlideshowCard({
     };
   }, []);
 
-  // Fetch collection info (username + full_name)
+  // Fetch collection info (username + full_name) & person meta
   useEffect(() => {
-    if (!currentCollName) { setCollectionInfo(null); return; }
+    if (!currentCollName) {
+      setCollectionInfo(null);
+      setPersonMeta({});
+      return;
+    }
     let cancelled = false;
     fetch(`/api/collection/info?collection=${encodeURIComponent(currentCollName)}`)
       .then(res => res.json())
       .then(data => { if (!cancelled) setCollectionInfo(data); })
       .catch(() => { if (!cancelled) setCollectionInfo(null); });
+    fetch(`/api/person/meta?collection=${encodeURIComponent(currentCollName)}`)
+      .then(res => res.json())
+      .then(data => { if (!cancelled && data && data.media) setPersonMeta(data.media); })
+      .catch(() => { if (!cancelled) setPersonMeta({}); });
     return () => { cancelled = true; };
   }, [currentCollName]);
 
@@ -227,7 +237,8 @@ export default function MobileSlideshowCard({
         setLoadError('');
         const controller = new AbortController();
         timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, 15000);
-        const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}&sort=${imageSort}`, { signal: controller.signal });
+        const pParam = personFilter !== '-' ? `&person=${encodeURIComponent(personFilter)}` : '';
+        const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}&sort=${imageSort}${pParam}`, { signal: controller.signal });
         if (!res.ok) {
           throw new Error(`加载目录失败: ${res.statusText}`);
         }
@@ -337,7 +348,7 @@ export default function MobileSlideshowCard({
         pendingAdvanceRef.current = null;
       }
     };
-  }, [currentCollName, imageSort]);
+  }, [currentCollName, imageSort, personFilter]);
 
   // C1: stable callback — read latest values via refs, no stale closure
   // NOTE: must be declared BEFORE the useEffect hooks below that reference it
@@ -684,7 +695,8 @@ export default function MobileSlideshowCard({
     resetProgressBar();
   };
 
-  const handleDelete = useCallback((e) => {
+  // 人像状态一键翻转（手机端）：是人像转非人像，非人像转人像（仅对该图生效）
+  const handleTogglePerson = async (e) => {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -692,100 +704,38 @@ export default function MobileSlideshowCard({
     if (images.length === 0 || activeIdx < 0 || activeIdx >= images.length) return;
     const currentMediaName = images[activeIdx];
     const currentColl = currentCollName;
-    const currentIdx = activeIdx;
-    const isVideo = isVideoFile(currentMediaName) || videoFileNames.has(currentMediaName);
-    const isLastMedia = images.length <= 1;
-
-    if (isLastMedia) {
-      skipToNextCollection(1);
-    } else {
-      preloadCacheRef.current.delete(`${currentCollName}:${currentMediaName}`);
-      setImages(prev => prev.filter(img => img !== currentMediaName));
-      if (activeIdx >= images.length - 1) {
-        setActiveIdx(Math.max(0, images.length - 2));
-      }
-      setOutgoingIdx(null);
-      resetProgressBar();
-    }
-
-    if (onQueueDelete) {
-      onQueueDelete({
-        collection: currentColl,
-        name: currentMediaName,
-        isVideo,
-        isLastMedia,
-        onUndo: () => {
-          if (isLastMedia) {
-            setCurrentCollName(currentColl);
-            if (onCollectionChange) onCollectionChange(tileId, currentColl);
+    if (!currentMediaName || !currentColl || isTogglingPerson) return;
+    setIsTogglingPerson(true);
+    try {
+      const res = await fetch(`/api/person/toggle?collection=${encodeURIComponent(currentColl)}&name=${encodeURIComponent(currentMediaName)}`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (data && data.success) {
+        setPersonMeta(prev => ({
+          ...prev,
+          [currentMediaName]: { p: data.p, s: data.s, manual: true },
+        }));
+        // 联动：如果当前处于"是/否"过滤模式，翻转导致该图不符模式，立即移出播放并步进下一张
+        const shouldEject = (personFilter === '1' && data.p === 0) || (personFilter === '0' && data.p === 1);
+        if (shouldEject) {
+          if (images.length <= 1) {
+            skipToNextCollection(1);
           } else {
-            if (currentCollName === currentColl) {
-              setImages(prev => {
-                if (prev.includes(currentMediaName)) return prev;
-                const next = [...prev];
-                const insertAt = Math.min(Math.max(0, currentIdx), next.length);
-                next.splice(insertAt, 0, currentMediaName);
-                return next;
-              });
-              setActiveIdx(currentIdx);
-              resetProgressBar();
+            preloadCacheRef.current.delete(`${currentColl}:${currentMediaName}`);
+            setImages(prev => prev.filter(img => img !== currentMediaName));
+            if (activeIdx >= images.length - 1) {
+              setActiveIdx(Math.max(0, images.length - 2));
             }
+            setOutgoingIdx(null);
+            resetProgressBar();
           }
         }
-      });
-    }
-  }, [currentCollName, images, activeIdx, videoFileNames, skipToNextCollection, resetProgressBar, onQueueDelete, onCollectionChange, tileId]);
-
-  // 删除整个帖子：按帖子索引找出该帖全部文件，一次提交撤销任务（10 秒后按 postId 整帖落盘删除）
-  const handleDeletePost = (e) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-    const pinfo = postIndex && images[activeIdx] ? postIndex.get(images[activeIdx]) : null;
-    if (!pinfo) return;
-    const postFiles = images.filter(f => postIndex.get(f)?.postId === pinfo.postId);
-    if (!postFiles.length) return;
-    const snapshot = images.slice();
-    const coll = currentCollName;
-    const isWholeColl = postFiles.length >= images.length;
-
-    if (isWholeColl) {
-      skipToNextCollection(1);
-    } else {
-      postFiles.forEach(f => preloadCacheRef.current.delete(`${coll}:${f}`));
-      setImages(prev => prev.filter(img => !postFiles.includes(img)));
-      const firstIdx = images.indexOf(postFiles[0]);
-      setActiveIdx(Math.max(0, Math.min(firstIdx, images.length - postFiles.length - 1)));
-      setOutgoingIdx(null);
-      resetProgressBar();
-    }
-
-    if (onQueueDelete) {
-      onQueueDelete({
-        collection: coll,
-        postId: pinfo.postId,
-        names: postFiles,
-        isVideo: false,
-        isLastMedia: isWholeColl,
-        onUndo: () => {
-          if (isWholeColl) {
-            setCurrentCollName(coll);
-            if (onCollectionChange) onCollectionChange(tileId, coll);
-            return;
-          }
-          if (currentCollNameRef.current !== coll) return;
-          setImages(prev => {
-            const merged = prev.filter(f => !postFiles.includes(f));
-            postFiles.forEach(f => {
-              const origIdx = snapshot.indexOf(f);
-              merged.splice(Math.min(origIdx, merged.length), 0, f);
-            });
-            return merged;
-          });
-          resetProgressBar();
-        }
-      });
+      }
+    } catch (err) {
+      console.warn('Failed to toggle person status:', err);
+    } finally {
+      setIsTogglingPerson(false);
     }
   };
 
@@ -1023,9 +973,9 @@ export default function MobileSlideshowCard({
         >
           {(() => {
             const igAccount = accountOf(currentCollName);
-            // IG 内容：账号名可点击 → 只播放该账号；其余部分保持原 onTitleClick 行为
+            // IG 内容：账号名可点击 → 勾选/取消该账号（多选）；其余部分保持原 onTitleClick 行为
             if (igAccount && typeof onSelectAccount === 'function') {
-              const active = accountFilter === igAccount;
+              const active = Array.isArray(accountFilter) ? accountFilter.includes(igAccount) : accountFilter === igAccount;
               const rest = prettyCollectionName(currentCollName).replace(`@${igAccount}`, '');
               return (
                 <>
@@ -1035,7 +985,7 @@ export default function MobileSlideshowCard({
                       e.stopPropagation();
                       onSelectAccount(igAccount);
                     }}
-                    title={active ? `取消只看 @${igAccount}` : `只播放 @${igAccount} 的帖子`}
+                    title={active ? `取消勾选 @${igAccount}` : `勾选 @${igAccount}（可多选）`}
                     style={{
                       cursor: 'pointer',
                       textDecoration: 'underline dotted',
@@ -1085,7 +1035,7 @@ export default function MobileSlideshowCard({
                         </div>
                       );
                     }
-                    const active = accountFilter === igAccount;
+                    const active = Array.isArray(accountFilter) ? accountFilter.includes(igAccount) : accountFilter === igAccount;
                     const rest = full.replace(`@${igAccount}`, '');
                     return (
                       <div style={{ fontSize: '0.7rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#fff' }}>
@@ -1094,7 +1044,7 @@ export default function MobileSlideshowCard({
                             e.stopPropagation();
                             onSelectAccount(igAccount);
                           }}
-                          title={active ? `取消只看 @${igAccount}` : `只播放 @${igAccount} 的帖子`}
+                          title={active ? `取消勾选 @${igAccount}` : `勾选 @${igAccount}（可多选）`}
                           style={{
                             cursor: 'pointer',
                             textDecoration: 'underline dotted',
@@ -1126,37 +1076,38 @@ export default function MobileSlideshowCard({
               <span style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.6)', marginRight: 4, flexShrink: 0 }}>
                 {activeIdx + 1}/{images.length}
               </span>
-              {(() => {
-                const pinfo = postIndex && images[activeIdx] ? postIndex.get(images[activeIdx]) : null;
-                if (!pinfo) return null;
-                const n = images.filter(f => postIndex.get(f)?.postId === pinfo.postId).length;
+              {/* 人像状态切换按钮（取代原删除按钮，仅对该图生效） */}
+              {images.length > 0 && (() => {
+                const curFile = images[activeIdx];
+                const m = curFile ? personMeta[curFile] : null;
+                const isP = m ? m.p === 1 : null;
                 return (
                   <button
                     type="button"
                     className="tile-mini-btn"
-                    onClick={handleDeletePost}
+                    onClick={handleTogglePerson}
                     onTouchStart={(e) => e.stopPropagation()}
                     onMouseDown={(e) => e.stopPropagation()}
-                    disabled={images.length === 0}
-                    title={`删除整个帖子（第 ${pinfo.postNo}/${pinfo.totalPosts} 帖，共 ${n} 个文件）`}
-                    style={{ color: '#ef4444', flexShrink: 0 }}
+                    disabled={isTogglingPerson}
+                    title={
+                      isP === true
+                        ? `当前已识别为人像${m?.manual ? '（已手动纠偏）' : ''}（点击转为非人像）`
+                        : (isP === false
+                            ? `当前为非人像${m?.manual ? '（已手动纠偏）' : ''}（点击转为人像）`
+                            : '人像未识别（点击强制标记为人像）')
+                    }
+                    style={{
+                      color: isP === true ? '#c084fc' : (isP === false ? '#94a3b8' : 'rgba(255,255,255,0.4)'),
+                      background: isP === true ? 'rgba(168, 85, 247, 0.18)' : 'transparent',
+                      border: isP === true ? '1px solid rgba(168, 85, 247, 0.4)' : '1px solid transparent',
+                      borderRadius: 4,
+                      flexShrink: 0,
+                    }}
                   >
-                    <Images size={13} />
+                    {isP === true ? <UserCheck size={13} /> : <UserX size={13} />}
                   </button>
                 );
               })()}
-              <button
-                type="button"
-                className="tile-mini-btn"
-                onClick={handleDelete}
-                onTouchStart={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                disabled={isDeleting || images.length === 0}
-                title={images.length > 0 ? `删除当前${(isVideoFile(images[activeIdx] || '') || videoFileNames.has(images[activeIdx])) ? '视频' : '图片'}` : '删除'}
-                style={{ color: isDeleting || images.length === 0 ? 'rgba(255,255,255,0.4)' : '#ef4444', flexShrink: 0 }}
-              >
-                <Trash2 size={13} />
-              </button>
               <button
                 className="tile-mini-btn"
                 onClick={() => setShowConfig(!showConfig)}

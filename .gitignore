@@ -18,9 +18,12 @@ Thumbs.db
 .auth-config.json
 .scan-directory.json
 .collection-cache.json
+.thumbnails/
 
 # User resources (ignore all sub-folders of resources, preserving the resources folder itself)
 resources/
 test/
 # Mimosa review artifacts
 .mimosa/
+server/models/
+*.pt

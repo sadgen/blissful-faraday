@@ -4,6 +4,7 @@ import MobileSlideshowCard from './MobileSlideshowCard';
 import ErrorBoundary from './ErrorBoundary';
 import MobileControlSheet from './MobileControlSheet';
 import FaradaySuiteMenu from './FaradaySuiteMenu';
+import MediaGridView from './MediaGridView';
 import '../mobile.css';
 
 // Calculate mobile tile coordinates in viewport percentage space
@@ -160,11 +161,14 @@ export default function MobileLayout({
   setRecentPostDays,
   recentDlDays,
   setRecentDlDays,
-  accountFilter = '',
+  personFilter = '-',
+  setPersonFilter,
+  accountFilter = [],
   onSelectAccount,
   onQueueDelete,
 }) {
   const [showZoomSlider, setShowZoomSlider] = useState(false);
+  const [isGridViewOpen, setIsGridViewOpen] = useState(false);
   const sliderTimeoutRef = useRef(null);
 
   // Remaining queue: tracks collections not yet shown this session (never repeats)
@@ -393,6 +397,7 @@ export default function MobileLayout({
                     onQueueDelete={onQueueDelete}
                     accountFilter={accountFilter}
                     onSelectAccount={onSelectAccount}
+                    personFilter={personFilter}
                   />
                 </ErrorBoundary>
               ))}
@@ -497,11 +502,22 @@ export default function MobileLayout({
         setRecentPostDays={setRecentPostDays}
         recentDlDays={recentDlDays}
         setRecentDlDays={setRecentDlDays}
+        personFilter={personFilter}
+        setPersonFilter={setPersonFilter}
         accountFilter={accountFilter}
         onSelectAccount={onSelectAccount}
+        onOpenGridView={() => setIsGridViewOpen(true)}
       />
 
-      {/* 5. Floating Vertical Zoom Slider on Right Screen Edge */}
+      {/* 5. Media Grid View Modal for mobile */}
+      <MediaGridView
+        isOpen={isGridViewOpen}
+        onClose={() => setIsGridViewOpen(false)}
+        accountFilter={accountFilter}
+        personFilter={personFilter}
+      />
+
+      {/* 6. Floating Vertical Zoom Slider on Right Screen Edge */}
       <div 
         className="mobile-edge-zoom-sensor"
         onTouchStart={triggerZoomSliderBriefly}

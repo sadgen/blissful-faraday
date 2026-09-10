@@ -55,8 +55,11 @@ export default function MobileControlSheet({
   setRecentPostDays,
   recentDlDays,
   setRecentDlDays,
+  personFilter = '-',
+  setPersonFilter,
   accountFilter = '',
   onSelectAccount,
+  onOpenGridView,
 }) {
   const [isHistoryOpen, setIsHistoryOpen] = React.useState(false);
   const historyRef = React.useRef(null);
@@ -177,6 +180,31 @@ export default function MobileControlSheet({
                     📁 {collections ? collections.length : 0} 个
                   </span>
                 </div>
+              </div>
+
+              {/* Quick Action: Media Grid View */}
+              <div style={{ marginBottom: 12 }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenGridView && onOpenGridView();
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    borderRadius: 10,
+                    background: 'rgba(168, 85, 247, 0.2)',
+                    border: '1px solid rgba(168, 85, 247, 0.45)',
+                    color: '#d8b4fe',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    fontSize: '0.8rem',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Grid size={15} /> 打开平铺图片检视 (快速缩放与纠偏)
+                </button>
               </div>
 
               {/* SECTION A: Layout Grid (Split Tiles) */}
@@ -312,13 +340,13 @@ export default function MobileControlSheet({
                   📋 Instagram 账号
                 </div>
                 <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: 8 }}>
-                  点击账号，所有分屏只播放该账号的帖子（再点一次取消）
+                  勾选账号（可多选），分屏只播放勾选账号的帖子；下方附已选账号的 Instagram 主页链接
                 </div>
                 <AccountList
                   accountFilter={accountFilter}
                   onSelectAccount={(u) => {
+                    // 多选勾选：保持抽屉打开便于连续勾选
                     onSelectAccount && onSelectAccount(u);
-                    onClose();
                   }}
                   maxHeight={260}
                 />
@@ -351,6 +379,34 @@ export default function MobileControlSheet({
                     </div>
                   </div>
                 ))}
+              </div>
+
+              {/* 人像智能筛选 */}
+              <div className="mobile-sheet-section">
+                <div className="mobile-sheet-section-title">
+                  👤 人像智能筛选
+                </div>
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: 8 }}>
+                  基于本地 AI 检测：是（只播人像图/视频）、否（只播非人像）、-（不筛选，全部播放）
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap', width: '56px' }}>筛选</span>
+                  <div className="mobile-capsule-group" style={{ flex: 1 }}>
+                    {[
+                      { v: '-', l: '-（全部）' },
+                      { v: '1', l: '是' },
+                      { v: '0', l: '否' },
+                    ].map(opt => (
+                      <button
+                        key={opt.v}
+                        className={`mobile-capsule-btn ${personFilter === opt.v ? 'active' : ''}`}
+                        onClick={() => setPersonFilter && setPersonFilter(opt.v)}
+                      >
+                        {opt.l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               {/* Video Speed Control */}

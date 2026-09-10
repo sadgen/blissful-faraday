@@ -22,6 +22,7 @@ export default function useImagePreloader({
   onAspectRatioChange,
   collections,
   imageSort = 'name',
+  personFilter = '-',
 }) {
   const [images, setImages] = useState([]);
   // images 数组当前归属的图集名。切集加载期间 currentCollName 已变而 images 还是
@@ -54,6 +55,9 @@ export default function useImagePreloader({
   const activeIdxRef = useRef(activeIdx);
   const imagesRef = useRef(images);
   const shouldStartFromLastRef = useRef(false);
+  // 播放历史回跳的落点：{ coll, name }。切集加载完成 applyImages 时消费，
+  // 让画面精确落在历史帧上而不是新集首图
+  const pendingStartRef = useRef(null);
   const imagesCollRef = useRef('');
   useEffect(() => { imagesCollRef.current = imagesColl; }, [imagesColl]);
   // C4: separate controllers — directory switch vs slide advance must not abort each other
@@ -193,7 +197,8 @@ export default function useImagePreloader({
         const controller = new AbortController();
         abortImagesRef.current = controller;
         timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, 15000);
-        const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}&sort=${imageSort}`, { signal: controller.signal });
+        const pParam = personFilter !== '-' ? `&person=${encodeURIComponent(personFilter)}` : '';
+        const res = await fetch(`/api/collection/images?collection=${encodeURIComponent(currentCollName)}&sort=${imageSort}${pParam}`, { signal: controller.signal });
         if (!res.ok) throw new Error(`加载目录失败: ${res.statusText}`);
         const contentType = res.headers.get('content-type');
         if (!contentType || !contentType.includes('application/json')) {
@@ -255,7 +260,12 @@ export default function useImagePreloader({
             setImages(newImages);
             setImagesColl(currentCollName);
             let startIdx = 0;
-            if (shouldStartFromLastRef.current && newImages.length > 0) {
+            if (pendingStartRef.current && pendingStartRef.current.coll === currentCollName) {
+              // 播放历史回跳：精确落在历史帧
+              const i = newImages.indexOf(pendingStartRef.current.name);
+              startIdx = i >= 0 ? i : 0;
+              pendingStartRef.current = null;
+            } else if (shouldStartFromLastRef.current && newImages.length > 0) {
               startIdx = newImages.length - 1;
               shouldStartFromLastRef.current = false;
             }
@@ -285,6 +295,7 @@ export default function useImagePreloader({
           setActiveIdx(0);
           setOutgoingIdx(null);
           applyLoadingState(false);
+          pendingStartRef.current = null;
         }
       } catch (err) {
         if (err.name === 'AbortError') {
@@ -311,7 +322,7 @@ export default function useImagePreloader({
         pendingAdvanceRef.current = null;
       }
     };
-  }, [currentCollName]);
+  }, [currentCollName, personFilter]);
 
   // Preload images ahead of time
   const preloadImages = useCallback((startIdx, count) => {
@@ -440,7 +451,7 @@ export default function useImagePreloader({
   return {
     images, setImages, imagesColl, removeImage, restoreImage, activeIdx, setActiveIdx, outgoingIdx, setOutgoingIdx,
     isLoadingImages, isLoadingRef, loadError, tileAspectRatio, postIndex, holdFrame,
-    imagesRef, activeIdxRef, shouldStartFromLastRef,
+    imagesRef, activeIdxRef, shouldStartFromLastRef, pendingStartRef,
     preloadAndAdvance, preloadImages, getImageDimensions, preloadCacheRef,
     videoFileNames, scheduleOutgoingClear,
   };

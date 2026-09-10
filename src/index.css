@@ -490,13 +490,16 @@ html, body, #root, .app-container {
   right: 0;
   z-index: 20;
   width: 100%;
-  padding: 8px 16px;
+  height: 42px;
+  padding: 0 12px;
   transition: var(--transition-smooth);
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 6px;
   border-radius: 0;
   border-bottom: none;
+  flex-wrap: nowrap;
+  box-sizing: border-box;
 }
 
 .hud-container.hidden {
@@ -508,9 +511,10 @@ html, body, #root, .app-container {
 .hud-section {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
-  padding-right: 12px;
+  padding-right: 8px;
+  flex-shrink: 0;
 }
 
 .hud-section:last-child {
@@ -519,28 +523,46 @@ html, body, #root, .app-container {
 }
 
 .hud-section-compact {
-  padding: 4px 8px;
+  padding: 2px 6px;
 }
 
 .hud-label {
-  font-size: 0.75rem;
+  font-size: 0.65rem;
   font-weight: 700;
   text-transform: uppercase;
   color: var(--text-secondary);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
 }
 
 .hud-title-brand {
   font-family: var(--font-display);
   font-weight: 800;
-  font-size: 1.1rem;
+  font-size: 0.9rem;
   background: linear-gradient(to right, #a78bfa, #3b82f6);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+@media (max-width: 1200px) {
+  .hud-brand-text {
+    display: none;
+  }
+}
+
+@media (max-width: 960px) {
+  .hud-container {
+    gap: 4px;
+    padding: 0 8px;
+  }
+  .hud-section {
+    gap: 4px;
+    padding-right: 6px;
+  }
 }
 
 /* Drawer Menu (Settings, Dir Selector) */

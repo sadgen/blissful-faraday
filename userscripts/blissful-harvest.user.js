@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.3.5
-// @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。多图贴文秒级全量提取 + 个人主页旁听接口 JSON 全量采集多图 + 帖子结构（shortcode/时间/caption）随媒体回传 + 网页端多图横向并排免点击预览。
+// @version      1.3.6
+// @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。实时显式入库进度 + 会话累计已存统计 + 多图秒级提取与 JSON 旁听全量采集。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @match        https://www.instagram.com/*
@@ -140,6 +140,9 @@
   const sendingUsers = new Set();          // 正在回传中的用户：服务端串行下载耗时较长，
                                            // 在途期间不得重发同一批，否则并发重复下载
                                            // 会互相踩踏临时文件并触发 IG CDN 限流
+  const inFlightByUser = new Map();        // username -> 在途入库中的媒体数，用于前端向用户展示实时下载进度
+  const sessionStats = { downloaded: 0, skipped: 0 }; // 本次会话累计入库/跳过统计
+  let pendingAddedNotify = 0;              // 待通知的新增数（含 DOM 扫描和 JSON 旁听多图）
   const blobQueue = [];                    // 流式视频待中继队列 {username, videoEl}
   const BATCH_MAX = 40;
 
@@ -495,6 +498,10 @@
       pending.set(key, { key, url: vid.url, alt: [], type: 'video', poster: vid.poster, post: col.postByUrl.get(vid.url) || undefined });
       added++;
     }
+    if (added > 0) {
+      pendingAddedNotify += added;
+      renderBadge();
+    }
     return added;
   }
 
@@ -730,7 +737,8 @@
     });
 
     const totalPending = [...pendingByUser.values()].reduce((n, m) => n + m.size, 0);
-    updateBadge(username, totalPending, added);
+    if (added > 0) pendingAddedNotify += added;
+    renderBadge(username);
   }
 
   // ─── 上传 ────────────────────────────────────────────────────────────────
@@ -747,6 +755,9 @@
       if (!items.length) continue;
 
       sendingUsers.add(username);
+      inFlightByUser.set(username, items.length);
+      renderBadge(username);
+
       GM_xmlhttpRequest({
         method: 'POST',
         url: GALLERY() + '/api/instagram/harvest',
@@ -755,6 +766,7 @@
         timeout: 60000,
         onload: res => {
           sendingUsers.delete(username);
+          inFlightByUser.delete(username);
           let data = {};
           try { data = JSON.parse(res.responseText); } catch { }
           if (res.status === 200 && data.success) {
@@ -770,8 +782,17 @@
               failedCount.delete(it.key);
               if (it.type === 'video') { registerVideoPrefix(it.url); registerVideoPrefix(it.poster); }
             });
-            flashBadge(`@${username} 新存 ${data.downloaded} · 已有 ${data.skipped}` +
-              (data.failed ? ` · 失败 ${data.failed}` : ''));
+            const d = Number(data.downloaded) || 0;
+            const s = Number(data.skipped) || 0;
+            const f = Number(data.failed) || 0;
+            sessionStats.downloaded += d;
+            sessionStats.skipped += s;
+
+            if (d > 0 || f > 0) {
+              flashBadge(`@${username} 新存 ${d}` + (s ? ` · 跳过已存 ${s}` : '') + (f ? ` · 失败 ${f}` : ''));
+            } else if (s > 0) {
+              flashBadgeQuiet(`@${username} 均已在库（跳过已存 ${s}）`);
+            }
           } else if (res.status === 401) {
             items.forEach(it => failedCount.set(it.key, 3)); // 未登录：本会话不再重试
             flashBadge('请先在浏览器登录画廊，再刷新 Instagram');
@@ -779,17 +800,21 @@
             items.forEach(it => failedCount.set(it.key, (failedCount.get(it.key) || 0) + 1));
             flashBadge(`画廊返回 ${res.status}：${data.error || '未知错误'}`);
           }
-          updateBadge(username, [...pendingByUser.values()].reduce((n, m) => n + m.size, 0));
+          renderBadge(username);
         },
         onerror: () => {
           sendingUsers.delete(username);
+          inFlightByUser.delete(username);
           items.forEach(it => failedCount.set(it.key, (failedCount.get(it.key) || 0) + 1));
           flashBadge('画廊未连接（' + GALLERY() + '）');
+          renderBadge(username);
         },
         ontimeout: () => {
           sendingUsers.delete(username);
+          inFlightByUser.delete(username);
           items.forEach(it => failedCount.set(it.key, (failedCount.get(it.key) || 0) + 1));
           flashBadge('画廊响应超时');
+          renderBadge(username);
         },
       });
     }
@@ -822,8 +847,14 @@
             if (pend && pfx) for (const k of [...pend.keys()]) {
               if (mediaIdPrefix(k) === pfx) pend.delete(k); // 封面图不再上传
             }
-            if (d.downloaded) onDone(`${o.okPrefix || '🎬 视频已存'} @${username}（${d.sizeMB} MB）`);
-            else onDone('🎬 视频内容已存在，跳过');
+            if (d.downloaded) {
+              sessionStats.downloaded += 1;
+              onDone(`${o.okPrefix || '🎬 视频已存'} @${username}（${d.sizeMB} MB）`);
+            } else {
+              sessionStats.skipped += 1;
+              onDone('🎬 视频内容已存在，跳过');
+            }
+            renderBadge(username);
           } else if (res.status === 401) onDone('请先登录画廊，视频才能入库');
           else onDone(`🎬 视频入库失败 ${res.status}：${d.error || '未知错误'}`);
         },
@@ -1179,26 +1210,73 @@
     showBadge(text);
   }
   let flashTimer = null;
-  function updateBadge(username, pendingCount, added) {
-    if (flashTimer) return; // 闪现消息优先
-    if (!username) {
-      if (pendingCount > 0) {
-        setBadge(`📥 时间线 · 待同步 ${pendingCount}`);
-      } else {
-        let host = GALLERY();
-        try { host = new URL(GALLERY()).host; } catch { }
-        setBadge(`📥 待机 → ${host}（刷时间线或进主页自动采集）`);
-      }
+  let flashPriority = 0; // 1: 弱提示（如纯已有跳过），2: 强提示（新存/报错/录制）
+
+  function flashBadge(text, priority = 2) {
+    if (flashTimer && flashPriority > priority) return;
+    const statSuffix = sessionStats.downloaded > 0 ? ` · 会话已存 ${sessionStats.downloaded}` : '';
+    showBadge('📥 ' + text + statSuffix);
+    flashPriority = priority;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      flashTimer = null;
+      flashPriority = 0;
+      renderBadge();
+    }, 4000);
+  }
+
+  function flashBadgeQuiet(text) {
+    flashBadge(text, 1);
+  }
+
+  function renderBadge(usernameOverride) {
+    if (flashTimer) return;
+    const currentProfile = usernameOverride || profileFromPath();
+    const totalPending = [...pendingByUser.values()].reduce((n, m) => n + m.size, 0);
+    const totalInFlight = [...inFlightByUser.values()].reduce((n, count) => n + count, 0);
+
+    // 未产生任何操作与数据时的初始待机态
+    if (!totalPending && !totalInFlight && sessionStats.downloaded === 0 && sessionStats.skipped === 0) {
+      let host = GALLERY();
+      try { host = new URL(GALLERY()).host; } catch { }
+      setBadge(`📥 待机 → ${host}（刷时间线或进主页自动采集）`);
       return;
     }
-    setBadge(`📥 @${username}` +
-      (pendingCount ? ` 待同步 ${pendingCount}` : ' 已全部同步') +
-      (added ? ` (+${added})` : ''));
+
+    const targetLabel = currentProfile ? `@${currentProfile}` : '时间线';
+    const parts = [];
+
+    // 1. 正在入库状态（向用户显式传达正在后台下载传输，消解卡死焦虑）
+    if (totalInFlight > 0) {
+      parts.push(`正在入库 ${totalInFlight} 项...`);
+    }
+
+    // 2. 待同步数量
+    if (totalPending > 0) {
+      parts.push(`待同步 ${totalPending}`);
+    } else if (totalInFlight === 0) {
+      parts.push('已全部同步');
+    }
+
+    // 3. 本次扫描或接口旁听的新增
+    if (pendingAddedNotify > 0) {
+      parts.push(`(+${pendingAddedNotify})`);
+      pendingAddedNotify = 0;
+    }
+
+    // 4. 会话累计成果常驻
+    if (sessionStats.downloaded > 0) {
+      parts.push(`会话已存 ${sessionStats.downloaded}`);
+    } else if (sessionStats.skipped > 0) {
+      parts.push(`已核验 ${sessionStats.skipped}`);
+    }
+
+    setBadge(`📥 ${targetLabel} · ${parts.join(' · ')}`);
   }
-  function flashBadge(text) {
-    showBadge('📥 ' + text);
-    clearTimeout(flashTimer);
-    flashTimer = setTimeout(() => { flashTimer = null; }, 4000);
+
+  function updateBadge(username, pendingCount, added) {
+    if (typeof added === 'number' && added > 0) pendingAddedNotify += added;
+    renderBadge(username);
   }
 
   // ─── 定时器 ──────────────────────────────────────────────────────────────

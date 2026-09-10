@@ -30,6 +30,7 @@ export default function useSlideshowPlayback({
   isSyncMode,
   syncTrigger,
   onRequestNextCollection,
+  onStepBeforeStart,
   isLoadingRef,
 }) {
   const [localIsPlaying, setLocalIsPlaying] = useState(true);
@@ -160,22 +161,12 @@ export default function useSlideshowPlayback({
       return;
     }
 
-    // Reached start of collection (going backward) -> cycle to previous
+    // Reached start of collection (going backward) -> replay playback history
+    // 向上滚到第一张时回退到"上一个播放过的画面"（可跨图集，由瓦片接播放历史）。
+    // 不再走"随机换一个图集"的旧逻辑——那会被误认为"向前滚却跳出随机新帖"。
+    // 没有可回退的历史时停在原地
     if (nextIdx < 0) {
-      let nextCollName = onRequestNextCollection ? onRequestNextCollection() : null;
-      if (nextCollName === null || nextCollName === undefined) {
-        nextCollName = getNextUniqueCollection(-1);
-      }
-      if (shouldStartFromLastRef) shouldStartFromLastRef.current = true;
-      setCurrentCollName(nextCollName);
-      if (onCollectionChange) {
-        onCollectionChange(tileId, nextCollName);
-        if (displayedCollectionsRef.current) {
-          displayedCollectionsRef.current = [...displayedCollectionsRef.current];
-          displayedCollectionsRef.current[tileId] = nextCollName;
-        }
-      }
-      setOutgoingIdx(null);
+      if (onStepBeforeStart && onStepBeforeStart()) return;
       return;
     }
 
@@ -183,8 +174,8 @@ export default function useSlideshowPlayback({
     preloadAndAdvance(nextIdx, currentCollNameVal, currentIdx);
   }, [activeIdx, imagesRef, currentCollNameRef, setOutgoingIdx,
       getNextUniqueCollection, setCurrentCollName, onCollectionChange,
-      tileId, setActiveIdx, preloadAndAdvance, shouldStartFromLastRef,
-      displayedCollectionsRef, onRequestNextCollection]);
+      tileId, setActiveIdx, preloadAndAdvance,
+      displayedCollectionsRef, onRequestNextCollection, onStepBeforeStart]);
 
   const advanceSlideRef = useRef(advanceSlide);
   advanceSlideRef.current = advanceSlide;

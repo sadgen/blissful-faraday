@@ -14,6 +14,7 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
+import * as personDetector from './person-detector.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -559,6 +560,45 @@ function splitCompositeCollection(name) {
   return [username, postId];
 }
 
+// 人像三态过滤：person=1 只留识别为人像的；person=0 只留识别为非人像的；其它/未传不筛选
+function applyPersonFilter(collectionDir, list, personParam) {
+  if (personParam !== '1' && personParam !== '0') return list;
+  const want = parseInt(personParam, 10);
+  try {
+    const meta = personDetector.loadMetaFor(collectionDir);
+    return list.filter(f => meta[f] && meta[f].p === want);
+  } catch {
+    return list;
+  }
+}
+
+// 扁平媒体扫描账号级 mtime 缓存（消除 10,000+ 次冗余 statSync 系统调用）
+const flatAccountCache = new Map(); // accountName -> { dirMtime, files: [{ name, mtime, isVideo }] }
+
+function getAccountMediaCached(accountDir, accountName) {
+  let dirMtime = 0;
+  try { dirMtime = fs.statSync(accountDir).mtimeMs; } catch { return []; }
+  const cached = flatAccountCache.get(accountName);
+  if (cached && cached.dirMtime === dirMtime) {
+    return cached.files;
+  }
+  const exts = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.mp4', '.webm']);
+  const vidExts = new Set(['.mp4', '.webm']);
+  let fileNames = [];
+  try { fileNames = fs.readdirSync(accountDir); } catch { return []; }
+  const files = [];
+  for (const f of fileNames) {
+    if (f.startsWith('.')) continue;
+    const ext = path.extname(f).toLowerCase();
+    if (!exts.has(ext)) continue;
+    let mtime = 0;
+    try { mtime = fs.statSync(path.join(accountDir, f)).mtimeMs; } catch {}
+    files.push({ name: f, mtime, isVideo: vidExts.has(ext) });
+  }
+  flatAccountCache.set(accountName, { dirMtime, files });
+  return files;
+}
+
 // ─── API middleware factory ───────────────────────────────────────────────
 
 export function createApiHandler() {
@@ -851,6 +891,100 @@ export function createApiHandler() {
       return;
     }
 
+    // ── GET /api/media/flat ──────────────────────────────────────────────
+    // 平铺单张图片/视频查询（跨图集拉平，支持按账号、人像、时间过滤与排序，用于网格全览视图）
+    if (url.pathname === '/api/media/flat' && req.method === 'GET') {
+      try {
+        const accountsParam = (url.searchParams.get('accounts') || '').trim();
+        const personParam = url.searchParams.get('person'); // '1' | '0' | '-' | null
+        const recentDlDays = parseInt(url.searchParams.get('recentDlDays') || '0', 10);
+        const sortParam = url.searchParams.get('sort') || 'mtime_desc'; // 'mtime_desc' | 'mtime_asc' | 'name_asc' | 'name_desc'
+
+        const exts = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.mp4', '.webm']);
+        const vidExts = new Set(['.mp4', '.webm']);
+
+        let targetDirs = [];
+        if (accountsParam) {
+          const names = accountsParam.split(',').map(s => s.trim()).filter(Boolean);
+          for (const name of names) {
+            if (isSafeAccountName(name)) {
+              const full = path.resolve(path.join(activeResourcesDir, name));
+              if (isPathWithin(full, path.resolve(activeResourcesDir)) && fs.existsSync(full)) {
+                targetDirs.push({ name, dir: full });
+              }
+            }
+          }
+        } else {
+          // 扫描 activeResourcesDir 下所有子目录
+          const entries = fs.readdirSync(activeResourcesDir, { withFileTypes: true });
+          for (const ent of entries) {
+            if (!ent.name.startsWith('.') && ent.isDirectory()) {
+              targetDirs.push({ name: ent.name, dir: path.join(activeResourcesDir, ent.name) });
+            }
+          }
+        }
+
+        // 收集媒体并提取元数据
+        let items = [];
+        const now = Date.now();
+        const dlCutoff = recentDlDays > 0 ? now - recentDlDays * 86400000 : null;
+
+        for (const target of targetDirs) {
+          let files = [];
+          try {
+            files = fs.readdirSync(target.dir);
+          } catch { continue; }
+          const meta = personDetector.loadMetaFor(target.dir) || {};
+          for (const f of files) {
+            if (f.startsWith('.')) continue;
+            const ext = path.extname(f).toLowerCase();
+            if (!exts.has(ext)) continue;
+
+            // 人像三态过滤
+            const m = meta[f];
+            const p = m ? m.p : -1;
+            if (personParam === '1' && p !== 1) continue;
+            if (personParam === '0' && p !== 0) continue;
+
+            let mtime = 0;
+            try {
+              mtime = fs.statSync(path.join(target.dir, f)).mtimeMs;
+            } catch { mtime = 0; }
+
+            if (dlCutoff !== null && mtime < dlCutoff) continue;
+
+            items.push({
+              c: target.name,
+              n: f,
+              t: Math.round(mtime),
+              p,
+              s: m ? m.s : 0,
+              m: !!(m && m.manual),
+              v: vidExts.has(ext),
+            });
+          }
+        }
+
+        // 排序
+        if (sortParam === 'mtime_desc') {
+          items.sort((a, b) => b.t - a.t);
+        } else if (sortParam === 'mtime_asc') {
+          items.sort((a, b) => a.t - b.t);
+        } else if (sortParam === 'name_asc') {
+          items.sort((a, b) => a.n.localeCompare(b.n, 'zh-CN'));
+        } else if (sortParam === 'name_desc') {
+          items.sort((a, b) => b.n.localeCompare(a.n, 'zh-CN'));
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ total: items.length, items }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
     // ── GET /api/collection/images（帖子级虚拟图集 user::postId）─────────
     // 复合名走独立路由：直接按 manifest 返回，不经磁盘扫描与列表缓存；
     // 文件仍在 instagram-scraped/账号/ 下，名称合法性先经 splitCompositeCollection
@@ -895,6 +1029,13 @@ export function createApiHandler() {
               && fs.existsSync(path.join(accountDir, f)))
             : [];
         }
+        // 人像三态过滤：person=1 只留人像；person=0 只留非人像；其它/未传不筛选
+        const personParam = url.searchParams.get('person');
+        if (personParam === '1' || personParam === '0') {
+          const want = parseInt(personParam, 10);
+          const meta = personDetector.loadMetaFor(accountDir);
+          images = images.filter(f => meta[f] && meta[f].p === want);
+        }
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'POSTS-MANIFEST' });
         res.end(JSON.stringify({ name: collection, images }));
       } catch (err) {
@@ -930,8 +1071,9 @@ export function createApiHandler() {
             if (!mt) { mt = new Map(); dirImagesMtimeCache.set(activeResourcesDir, mt); }
             if (!mt.has(collection)) mt.set(collection, currentMtime);
           }
+          const outImages = applyPersonFilter(path.join(activeResourcesDir, collection), dirImages.get(collection) || [], url.searchParams.get('person'));
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'HIT-MEMORY' });
-          res.end(JSON.stringify({ name: collection, images: dirImages.get(collection) }));
+          res.end(JSON.stringify({ name: collection, images: outImages }));
           return;
         }
         dirImages.delete(collection);
@@ -978,8 +1120,9 @@ export function createApiHandler() {
         // 整包写盘去抖合并，否则 4 窗口播放时会把事件循环堵死
         if (dirColl) schedulePersistentSave(activeResourcesDir);
 
+        const outImages = applyPersonFilter(resolvedPath, images, url.searchParams.get('person'));
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'MISS' });
-        res.end(JSON.stringify({ name: collection, images }));
+        res.end(JSON.stringify({ name: collection, images: outImages }));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
@@ -1203,19 +1346,23 @@ export function createApiHandler() {
           }
         } catch {}
         // 未归属集合没有帖子结构；帖子图集返回整账号帖子列表（编号按账号计）。
-        // dl 为帖内文件的最新落盘时间（毫秒），供前端做"最近几日下载"过滤。
+        // dl 为帖内文件的最新落盘时间（毫秒），供前端做"最近几日下载"过滤；
+        // np/nn 分别为帖内已识别的人像数/非人像数，供前端做"人像筛选"过滤。
+        const meta = personDetector.loadMetaFor(resolvedPath);
         const posts = (comp && comp[1] === '__unsorted')
           ? []
           : sortedPostsOf(manifest).map(p => {
-              let dl = 0;
+              let dl = 0, np = 0, nn = 0;
               for (const f of p.media) {
                 if (typeof f !== 'string' || f.includes('/') || f.includes('\\')) continue;
                 try {
                   const st = fs.statSync(path.join(resolvedPath, f));
                   if (st.mtimeMs > dl) dl = st.mtimeMs;
                 } catch {}
+                const m = meta[f];
+                if (m) { if (m.p === 1) np++; else nn++; }
               }
-              return { ...p, dl: dl || null };
+              return { ...p, dl: dl || null, np, nn };
             });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ collection, posts }));
@@ -1696,6 +1843,9 @@ export function createApiHandler() {
               fs.renameSync(tmpPath, finalPath);
               downloaded++;
               recordedMedia.push({ post: item.post, filename: path.basename(finalPath) });
+              try {
+                personDetector.enqueue(targetDir, path.basename(finalPath), item.type === 'video' ? 'video' : 'image');
+              } catch {}
               if (item.type === 'video') {
                 videoPrefixSet.add(mediaIdPrefix(item.url));
                 videoPrefixSet.add(mediaIdPrefix(item.poster));
@@ -1835,6 +1985,9 @@ export function createApiHandler() {
           removeVideoPosters(targetDir, [mediaIdPrefix(data.posterUrl), mediaIdPrefix(data.srcUrl)]);
           recordBlobPost();
           try {
+            personDetector.enqueue(targetDir, path.basename(finalPath), 'video');
+          } catch {}
+          try {
             const infoPath = path.join(targetDir, '.collection-info.json');
             if (!fs.existsSync(infoPath)) {
               fs.writeFileSync(infoPath, JSON.stringify({
@@ -1854,6 +2007,230 @@ export function createApiHandler() {
           res.end(JSON.stringify({ error: err.message }));
         }
       });
+      return;
+    }
+
+    // ── GET /api/person/stats ───────────────────────────────────────────
+    if (url.pathname === '/api/person/stats' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(personDetector.getStats()));
+      return;
+    }
+
+    // ── POST /api/person/toggle?collection=xxx&name=yyy ────────────────
+    // 人工纠偏：翻转某张图片的人像判定状态（是人像 ↔ 非人像）
+    if (url.pathname === '/api/person/toggle' && req.method === 'POST') {
+      const collection = url.searchParams.get('collection');
+      const name = url.searchParams.get('name') || url.searchParams.get('file');
+      if (!collection || !name) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing collection or name parameter' }));
+        return;
+      }
+      try {
+        const comp = splitCompositeCollection(collection);
+        let targetDir;
+        if (comp) {
+          const igRoot = path.resolve(INSTAGRAM_SCRAPE_DIR);
+          targetDir = path.resolve(path.join(igRoot, comp[0]));
+          if (!isPathWithin(targetDir, igRoot) || targetDir === igRoot) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Access Denied' }));
+            return;
+          }
+        } else {
+          targetDir = path.resolve(path.join(activeResourcesDir, collection));
+          if (!isPathWithin(targetDir, path.resolve(activeResourcesDir))) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Access Denied' }));
+            return;
+          }
+        }
+        const result = personDetector.togglePerson(targetDir, name);
+        if (!result) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '无法修改该文件的人像属性' }));
+          return;
+        }
+        console.log(`[Person] 人工纠偏 @${path.basename(targetDir)}/${name}: ${result.oldP === 1 ? '人像' : '非人像'} → ${result.p === 1 ? '人像' : '非人像'}`);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ success: true, ...result }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // ── GET /api/person/meta?collection=xxx ─────────────────────────────
+    if (url.pathname === '/api/person/meta' && req.method === 'GET') {
+      const collection = url.searchParams.get('collection');
+      if (!collection) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing collection parameter' }));
+        return;
+      }
+      try {
+        const comp = splitCompositeCollection(collection);
+        let targetDir;
+        if (comp) {
+          targetDir = path.resolve(path.join(INSTAGRAM_SCRAPE_DIR, comp[0]));
+        } else {
+          targetDir = path.resolve(path.join(activeResourcesDir, collection));
+        }
+        const media = personDetector.loadMetaFor(targetDir);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ collection, media }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // ── GET /api/media/flat-list ─────────────────────────────────────────
+    // 平铺图片检视专用的单文件级扁平列表（支持按账号、人像状态、时间排序与分页，带账号级 mtime 内存缓存）
+    if (url.pathname === '/api/media/flat-list' && req.method === 'GET') {
+      try {
+        const accountsParam = (url.searchParams.get('accounts') || '').trim();
+        const personParam = (url.searchParams.get('person') || '-').trim();
+        const sortParam = (url.searchParams.get('sort') || 'mtime_desc').trim();
+        const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10));
+        const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '60', 10)));
+
+        const rootDir = activeResourcesDir;
+
+        // 确定要扫描的目录集合（账号目录）
+        let targetDirs = [];
+        if (accountsParam) {
+          const accs = accountsParam.split(',').map(s => s.trim()).filter(Boolean);
+          for (const a of accs) {
+            if (isSafeAccountName(a)) {
+              const d = path.join(rootDir, a);
+              if (fs.existsSync(d)) targetDirs.push({ name: a, path: d });
+            }
+          }
+        } else {
+          // 全部目录
+          try {
+            const list = fs.readdirSync(rootDir, { withFileTypes: true });
+            for (const item of list) {
+              if (item.isDirectory() && !item.name.startsWith('.')) {
+                targetDirs.push({ name: item.name, path: path.join(rootDir, item.name) });
+              }
+            }
+          } catch {}
+        }
+
+        const allItems = [];
+        for (const target of targetDirs) {
+          const files = getAccountMediaCached(target.path, target.name);
+          const meta = personDetector.loadMetaFor(target.path);
+
+          for (const fileObj of files) {
+            const f = fileObj.name;
+            const m = meta[f];
+            const p = m ? m.p : null; // 1: 人像, 0: 非人像, null: 未识别
+            const s = m ? m.s : null;
+            const manual = m ? !!m.manual : false;
+
+            // 人像三态过滤
+            if (personParam === '1' && p !== 1) continue;
+            if (personParam === '0' && p !== 0) continue;
+
+            allItems.push({
+              collection: target.name,
+              name: f,
+              mtime: fileObj.mtime,
+              p,
+              s,
+              manual,
+              isVideo: fileObj.isVideo,
+            });
+          }
+        }
+
+        // 排序
+        if (sortParam === 'mtime_asc') {
+          allItems.sort((a, b) => a.mtime - b.mtime || a.name.localeCompare(b.name));
+        } else if (sortParam === 'name') {
+          allItems.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+        } else {
+          // mtime_desc 默认
+          allItems.sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name));
+        }
+
+        const total = allItems.length;
+        const items = allItems.slice(offset, offset + limit);
+        const hasMore = offset + limit < total;
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ total, offset, limit, items, hasMore }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // ── GET /api/media/thumbnail?collection=xxx&name=yyy ─────────────────
+    // 视频缩略图专用接口（读 .thumbnails/ 集中缓存，绝不污染相册；未命中时兜底生成）
+    if (url.pathname === '/api/media/thumbnail' && req.method === 'GET') {
+      const collection = url.searchParams.get('collection');
+      const name = url.searchParams.get('name') || url.searchParams.get('file');
+      if (!collection || !name) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing collection or name parameter' }));
+        return;
+      }
+      try {
+        const comp = splitCompositeCollection(collection);
+        const accName = comp ? comp[0] : collection;
+        const thumbFile = personDetector.getThumbnailPath(accName, name);
+        if (fs.existsSync(thumbFile) && fs.statSync(thumbFile).size > 400) {
+          res.writeHead(200, {
+            'Content-Type': 'image/jpeg',
+            'Cache-Control': 'public, max-age=86400',
+            'X-Cache': 'THUMB-FILE',
+          });
+          fs.createReadStream(thumbFile).pipe(res);
+          return;
+        }
+
+        // 未命中缓存：寻找视频原文件并就地生成首帧
+        let videoDir;
+        if (comp) {
+          videoDir = path.resolve(path.join(INSTAGRAM_SCRAPE_DIR, comp[0]));
+        } else {
+          videoDir = path.resolve(path.join(activeResourcesDir, collection));
+        }
+        const videoAbs = path.join(videoDir, name);
+        if (!fs.existsSync(videoAbs)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Video file not found' }));
+          return;
+        }
+
+        personDetector.generateVideoThumbnail(videoAbs, accName, name).then((createdPath) => {
+          if (createdPath && fs.existsSync(createdPath)) {
+            res.writeHead(200, {
+              'Content-Type': 'image/jpeg',
+              'Cache-Control': 'public, max-age=86400',
+              'X-Cache': 'THUMB-GEN',
+            });
+            fs.createReadStream(createdPath).pipe(res);
+          } else {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Failed to extract video thumbnail' }));
+          }
+        }).catch((err) => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        });
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
       return;
     }
 

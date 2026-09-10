@@ -14,6 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createApiHandler, getActiveDir } from './api-handler.js';
+import * as personDetector from './person-detector.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -128,6 +129,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[Blissful Faraday] Server running on http://0.0.0.0:${PORT}`);
   console.log(`[Blissful Faraday] Scan directory: ${getActiveDir()}`);
+  personDetector.start(getActiveDir());
 });
 
 // ─── Graceful shutdown ───────────────────────────────────────────────────

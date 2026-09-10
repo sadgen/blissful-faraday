@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, X } from 'lucide-react';
+import { RefreshCw, X, Instagram } from 'lucide-react';
 
 // 相对时间：账号面板里展示"最近更新"
 function relativeTime(ms) {
@@ -15,11 +15,12 @@ function relativeTime(ms) {
 /**
  * Instagram 账号清单（桌面 HUD 弹层与手机控制抽屉共用）。
  * 从 /api/instagram/accounts 拉取账号（帖子数/最近更新），支持按
- * 更新时间或帖子数排序；点击账号 → onSelectAccount(username)，
- * 仅播放该账号的帖子。普通文件夹不涉及此组件。
+ * 更新时间或帖子数排序；账号行带多选框，勾选（可多选）后仅播放
+ * 勾选账号的帖子；已选账号下方附 Instagram 主页直达链接。
+ * 普通文件夹不涉及此组件。
  */
 export default function AccountList({
-  accountFilter = '',
+  accountFilter = [],
   onSelectAccount,
   dense = false,
   maxHeight = 300,
@@ -28,6 +29,11 @@ export default function AccountList({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [sortKey, setSortKey] = useState('recent'); // 'recent' | 'posts'
+
+  // 兼容旧版单选字符串
+  const selected = Array.isArray(accountFilter)
+    ? accountFilter
+    : (accountFilter ? [accountFilter] : []);
 
   const fetchAccounts = useCallback(async () => {
     setLoading(true);
@@ -58,6 +64,7 @@ export default function AccountList({
   });
 
   const rowMinHeight = dense ? 34 : 46;
+  const checkboxSize = dense ? 13 : 15;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
@@ -100,12 +107,12 @@ export default function AccountList({
         </button>
       </div>
 
-      {/* 当前过滤提示 */}
-      {accountFilter && (
+      {/* 当前过滤提示：多选时显示已选数量，点击全部清空 */}
+      {selected.length > 0 && (
         <button
           type="button"
-          onClick={() => onSelectAccount && onSelectAccount(accountFilter)}
-          title="取消过滤，显示全部账号"
+          onClick={() => { [...selected].forEach(u => onSelectAccount && onSelectAccount(u)); }}
+          title="取消全部勾选，显示全部账号"
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
             background: 'rgba(168, 85, 247, 0.18)',
@@ -118,11 +125,11 @@ export default function AccountList({
           }}
         >
           <X size={dense ? 11 : 13} />
-          只看 @{accountFilter}（点击取消）
+          已选 {selected.length} 个账号{selected.length <= 2 ? `（@${selected.join('、@')}）` : ''}（点击清空）
         </button>
       )}
 
-      {/* 账号列表 */}
+      {/* 账号列表（多选框，勾选即播放） */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 3, overflowY: 'auto', maxHeight }}>
         {loading && accounts.length === 0 ? (
           <span style={{ fontSize: dense ? '0.65rem' : '0.75rem', color: 'var(--text-muted)', padding: '8px 4px' }}>
@@ -138,14 +145,14 @@ export default function AccountList({
           </span>
         ) : (
           sorted.map(acc => {
-            const active = accountFilter === acc.username;
+            const active = selected.includes(acc.username);
             const updated = Math.max(acc.latestPostTs ? acc.latestPostTs * 1000 : 0, acc.mtime || 0);
             return (
               <button
                 key={acc.username}
                 type="button"
                 onClick={() => onSelectAccount && onSelectAccount(acc.username)}
-                title={active ? `取消只看 @${acc.username}` : `只播放 @${acc.username} 的帖子`}
+                title={active ? `取消勾选 @${acc.username}` : `勾选 @${acc.username}（可多选，勾选的账号都会播放）`}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8,
                   minHeight: rowMinHeight,
@@ -158,6 +165,23 @@ export default function AccountList({
                   transition: 'background 0.15s',
                 }}
               >
+                {/* 多选框 */}
+                <span
+                  style={{
+                    flexShrink: 0,
+                    width: checkboxSize, height: checkboxSize,
+                    borderRadius: 4,
+                    border: `1.5px solid ${active ? '#a855f7' : 'rgba(255,255,255,0.3)'}`,
+                    background: active ? '#a855f7' : 'transparent',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: checkboxSize - 5,
+                    lineHeight: 1,
+                    color: '#fff',
+                    fontWeight: 'bold',
+                  }}
+                >
+                  {active ? '✓' : ''}
+                </span>
                 <div style={{ flex: 1, minWidth: 0, lineHeight: 1.3 }}>
                   <div style={{
                     fontSize: dense ? '0.7rem' : '0.8rem',
@@ -190,6 +214,40 @@ export default function AccountList({
           })
         )}
       </div>
+
+      {/* 已选账号的 Instagram 主页直达链接 */}
+      {selected.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: dense ? '0.6rem' : '0.68rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <Instagram size={dense ? 10 : 12} /> 已选账号主页
+          </span>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {selected.map(u => (
+              <a
+                key={u}
+                href={`https://www.instagram.com/${encodeURIComponent(u)}/`}
+                target="_blank"
+                rel="noreferrer noopener"
+                title={`打开 @${u} 的 Instagram 主页`}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  background: 'rgba(168, 85, 247, 0.14)',
+                  border: '1px solid rgba(168, 85, 247, 0.4)',
+                  color: '#d8b4fe',
+                  fontSize: dense ? '0.6rem' : '0.7rem',
+                  padding: dense ? '3px 7px' : '4px 9px',
+                  borderRadius: 12,
+                  textDecoration: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                <Instagram size={dense ? 10 : 12} />
+                @{u} ↗
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

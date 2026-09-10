@@ -7,6 +7,7 @@ import SlideshowTile from './SlideshowTile';
 import ErrorBoundary from './ErrorBoundary';
 import ControlHUD from './ControlHUD';
 import SecurityCenter from './SecurityCenter';
+import MediaGridView from './MediaGridView';
 
 export default function DesktopLayout({
   collections,
@@ -77,12 +78,15 @@ export default function DesktopLayout({
   setRecentPostDays,
   recentDlDays,
   setRecentDlDays,
-  accountFilter = '',
+  personFilter = '-',
+  setPersonFilter,
+  accountFilter = [],
   onSelectAccount,
   dirResetKey,
   onQueueDelete,
 }) {
   const [isHistoryOpen, setIsHistoryOpen] = React.useState(false);
+  const [isGridViewOpen, setIsGridViewOpen] = React.useState(false);
   const historyRef = React.useRef(null);
   const [activeTab, setActiveTab] = React.useState('storage');
   const [mountedTiles, setMountedTiles] = React.useState(0);
@@ -100,6 +104,40 @@ export default function DesktopLayout({
   // Once a collection is displayed in any tile, it's removed forever — never repeats.
   const remainingQueueRef = useRef([]);
   const prevFilterKeyRef = useRef('');
+
+  // 键盘快捷键支持：鼠标悬停的瓦片 + 各瓦片通过 ref 暴露的删除动作句柄
+  const hoveredTileRef = useRef(null);
+  const tileActionsRef = useRef({});
+
+  // 全局键盘快捷键（仅桌面布局）：
+  //   空格            全局 播放 / 暂停
+  //   ← / →          鼠标所停瓦片 回退 / 前进 到之前播放过的画面（可跨图集）
+  // 删除不做键盘快捷键（误按风险高），保留瓦片上的删除按钮 + 10 秒撤销通道
+  React.useEffect(() => {
+    function handleKeyDown(e) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+
+      if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault();
+        if (document.activeElement && document.activeElement.tagName === 'BUTTON') document.activeElement.blur();
+        setGlobalIsPlaying(g => !g);
+        return;
+      }
+
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      if (!collections.length) return;
+      const idx = hoveredTileRef.current ?? 0;
+      const actions = tileActionsRef.current[idx];
+      if (!actions) return;
+      e.preventDefault();
+      if (e.key === 'ArrowLeft') actions.historyBack?.();
+      else actions.historyForward?.();
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [collections.length, setGlobalIsPlaying]);
 
   const consumeNext = useCallback(() => {
     if (remainingQueueRef.current.length > 0) {
@@ -264,6 +302,8 @@ export default function DesktopLayout({
             return (
               <div
                 key={index}
+                onMouseEnter={() => { hoveredTileRef.current = index; }}
+                onMouseLeave={() => { if (hoveredTileRef.current === index) hoveredTileRef.current = null; }}
                 style={{
                   position: 'absolute',
                   left: `${position.left}px`,
@@ -274,6 +314,7 @@ export default function DesktopLayout({
               >
                 <ErrorBoundary fallbackLabel="该窗口出现异常">
                   <SlideshowTile
+                    ref={el => { if (el) tileActionsRef.current[index] = el; }}
                     tileId={index}
                     collections={tileCollections}
                     displayedCollections={tileDisplayedCollections}
@@ -301,6 +342,7 @@ export default function DesktopLayout({
                     onQueueDelete={onQueueDelete}
                     accountFilter={accountFilter}
                     onSelectAccount={onSelectAccount}
+                    personFilter={personFilter}
                   />
                 </ErrorBoundary>
               </div>
@@ -388,8 +430,11 @@ export default function DesktopLayout({
           setRecentPostDays={setRecentPostDays}
           recentDlDays={recentDlDays}
           setRecentDlDays={setRecentDlDays}
+          personFilter={personFilter}
+          setPersonFilter={setPersonFilter}
           accountFilter={accountFilter}
           onSelectAccount={onSelectAccount}
+          onOpenGridView={() => setIsGridViewOpen(true)}
         />
       )}
 
@@ -644,6 +689,14 @@ export default function DesktopLayout({
           </div>
         )}
       </div>
+
+      {/* Media Grid View Modal */}
+      <MediaGridView
+        isOpen={isGridViewOpen}
+        onClose={() => setIsGridViewOpen(false)}
+        accountFilter={accountFilter}
+        personFilter={personFilter}
+      />
 
     </div>
   );
