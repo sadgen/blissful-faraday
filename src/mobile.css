@@ -867,3 +867,28 @@
     border-radius: 10px;
   }
 }
+
+/* ─── 过渡动画（全局「过渡动画」设置的实际渲染）────────────────────────
+   outgoing 容器保持垫底不变；新容器挂载时按所选效果入场。
+   fx-none 无规则 = 立即切换（原行为）。 */
+.mobile-slide-wrap.fx-fade.is-active {
+  animation: mobFadeIn 0.45s ease;
+}
+.mobile-slide-wrap.fx-slide.is-active {
+  animation: mobSlideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.mobile-slide-wrap.fx-ken-burns.is-active {
+  animation: mobFadeIn 0.35s ease, mobKenBurns 5s ease-out forwards;
+}
+@keyframes mobFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes mobSlideIn {
+  from { transform: translateX(6%); opacity: 0.4; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes mobKenBurns {
+  from { transform: scale(1); }
+  to { transform: scale(1.06); }
+}

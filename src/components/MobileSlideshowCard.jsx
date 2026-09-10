@@ -1322,6 +1322,7 @@ export default function MobileSlideshowCard({
               return (
                 <div
                   key={imgName}
+                  className={`mobile-slide-wrap fx-${transitionEffect}${isActive ? ' is-active' : ''}${isOutgoing ? ' is-outgoing' : ''}`}
                   style={{
                     position: 'absolute',
                     top: 0,
