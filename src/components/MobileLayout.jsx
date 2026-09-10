@@ -494,6 +494,8 @@ export default function MobileLayout({
         onLogout={onLogout}
         isSyncMode={isSyncMode}
         setIsSyncMode={setIsSyncMode}
+        globalTransitionEffect={globalTransitionEffect}
+        setGlobalTransitionEffect={setGlobalTransitionEffect}
         videoSpeed={videoSpeed}
         setVideoSpeed={setVideoSpeed}
         imageSort={imageSort}

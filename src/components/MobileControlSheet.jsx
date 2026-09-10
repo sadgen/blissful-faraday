@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
-import { 
+import {
   Grid, Compass, Sliders, FolderOpen,
-  RefreshCw, Trash2, Shuffle, ZoomIn, ZoomOut, Check, History, Shield
+  RefreshCw, Trash2, Shuffle, ZoomIn, ZoomOut, Check, History, Shield, Sparkles
 } from 'lucide-react';
 import SecurityCenter from './SecurityCenter';
 import AccountList from './AccountList';
@@ -47,6 +47,8 @@ export default function MobileControlSheet({
   onLogout,
   isSyncMode,
   setIsSyncMode,
+  globalTransitionEffect = 'none',
+  setGlobalTransitionEffect,
   videoSpeed,
   setVideoSpeed,
   imageSort,
@@ -282,6 +284,32 @@ export default function MobileControlSheet({
                   >
                     同步 (同时切换)
                   </button>
+                </div>
+              </div>
+
+              {/* Transition Animation Effect（与桌面设置抽屉一致的全局过渡设置） */}
+              <div className="mobile-sheet-section">
+                <div className="mobile-sheet-section-title">
+                  <Sparkles size={14} /> 过渡动画
+                </div>
+                <div className="mobile-capsule-group">
+                  {[
+                    { id: 'ken-burns', label: '温和缩放' },
+                    { id: 'fade', label: '平滑渐变' },
+                    { id: 'slide', label: '滑入' },
+                    { id: 'none', label: '关闭动画' },
+                  ].map(effect => (
+                    <button
+                      key={effect.id}
+                      className={`mobile-capsule-btn ${globalTransitionEffect === effect.id ? 'active' : ''}`}
+                      onClick={() => setGlobalTransitionEffect(effect.id)}
+                    >
+                      {effect.label}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 6 }}>
+                  短间隔（1~2秒）建议用「平滑渐变」，观感更柔和
                 </div>
               </div>
 
