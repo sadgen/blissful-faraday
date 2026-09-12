@@ -373,6 +373,8 @@ const INSTAGRAM_SCRAPE_DIR = path.join(os.homedir(), 'Pictures', 'instagram-scra
 const HARVEST_MAX_BYTES = 500 * 1024 * 1024;
 // 只允许从 Instagram CDN 下载，另放行 localhost 供本地测试
 const HARVEST_ALLOWED_HOSTS = ['cdninstagram.com', 'fbcdn.net', 'localhost', '127.0.0.1'];
+// 已记录过 UA 的来源设备（诊断去重，进程生命周期内有效）
+const seenHarvestUAs = new Set();
 
 function isHarvestHostAllowed(urlString) {
   try {
@@ -1926,6 +1928,15 @@ export function createApiHandler() {
             res.end(JSON.stringify({ error: 'username 格式非法' }));
             return;
           }
+          // 诊断：新来源设备出现时记录 UA（脚本版本/设备排查用）
+          try {
+            const uaRaw = req.headers['user-agent'] || 'unknown';
+            const uaKey = (/Android|iPhone|iPad|Mobile/i.test(uaRaw) ? 'MOBILE ' : 'DESKTOP ') + uaRaw.slice(0, 100);
+            if (!seenHarvestUAs.has(uaKey)) {
+              seenHarvestUAs.add(uaKey);
+              console.log(`[Harvest-UA] 新来源: ${uaKey}`);
+            }
+          } catch {}
           const targetDir = path.join(INSTAGRAM_SCRAPE_DIR, username);
           if (!isPathWithin(path.resolve(targetDir), path.resolve(INSTAGRAM_SCRAPE_DIR))) {
             res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -2046,7 +2057,7 @@ export function createApiHandler() {
             }
           } catch {}
 
-          console.log(`[Harvest] @${username}: 成功 ${downloaded} · 跳过 ${skipped} · 失败 ${failed} / 共 ${items.length}`);
+          console.log(`[Harvest] @${username}: 成功 ${downloaded} · 跳过 ${skipped} · 失败 ${failed} / 共 ${items.length} · 带帖 ${items.filter(it => it && it.post && typeof it.post.id === 'string').length}`);
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ success: true, username, downloaded, skipped, failed, failedUrls, total: items.length }));
         } catch (err) {
