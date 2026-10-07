@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.4.1
+// @version      1.5.0
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。实时显式入库进度 + 会话累计已存统计 + 多图秒级提取与 JSON 旁听全量采集 + 画廊后台采集桥 + 增量深采。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -39,7 +39,14 @@
       uw.__bfHarvestBridge = true; // 画廊据此判断桥可用，决定后台/前台打开
       window.addEventListener('message', (ev) => {
         const d = ev && ev.data;
-        if (!d || d.type !== 'bf-harvest-open' || typeof d.username !== 'string') return;
+        if (!d || typeof d !== 'object') return;
+        // 画廊「深采页数」设置同步（GM 存储同浏览器全站共享，Instagram 页实时读）
+        if (d.type === 'bf-harvest-config') {
+          const n = parseInt(d.deepScanMaxPages, 10);
+          if (Number.isFinite(n) && n >= 0 && n <= 200) GM_setValue('deepScanMaxPages', n);
+          return;
+        }
+        if (d.type !== 'bf-harvest-open' || typeof d.username !== 'string') return;
         if (!/^[A-Za-z0-9._]{1,30}$/.test(d.username)) return;
         const url = `https://www.instagram.com/${encodeURIComponent(d.username)}/`;
         try { GM_openInTab(url, { active: false, insert: true }); }
@@ -99,9 +106,15 @@
       ? '已开启：打开个人主页若首屏全新，将自动往下翻页采集；遇到已采集帖子、翻满页数或到底即停'
       : '已关闭：仅采集页面自然加载的内容');
   });
-  GM_registerMenuCommand('设置增量深采最大翻页数（当前 ' + GM_getValue('deepScanMaxPages', 10) + '）', () => {
-    const v = parseInt(prompt('最多自动翻多少页（约等于加载批次），达到后停止深采：', String(GM_getValue('deepScanMaxPages', 10))), 10);
-    if (Number.isFinite(v) && v >= 1 && v <= 200) GM_setValue('deepScanMaxPages', v);
+  // 最大翻页数实时读 GM 存储（画廊设置面板通过桥改它，Instagram 页即刻生效）；
+  // 0 = 不限制：不按页数停，只靠"遇到已采集帖子 / 到主页底部"自然停。
+  function deepScanMaxPages() {
+    const v = parseInt(GM_getValue('deepScanMaxPages', 10), 10);
+    return (Number.isFinite(v) && v >= 0 && v <= 200) ? v : 10;
+  }
+  GM_registerMenuCommand('设置增量深采最大翻页数（当前 ' + deepScanMaxPages() + '，0=不限）', () => {
+    const v = parseInt(prompt('最多自动翻多少页（约等于加载批次）；填 0 = 不限制，翻到主页底部或遇到已采集帖子才停：', String(deepScanMaxPages())), 10);
+    if (Number.isFinite(v) && v >= 0 && v <= 200) GM_setValue('deepScanMaxPages', v);
   });
   const ADDRESS_PROMPT = 'blissful-faraday 画廊地址（填好后需在该浏览器登录一次画廊）\n'
     + '· 推荐：https://gallery.example.com:8443 （地址固定，任何网络可用）\n'
@@ -1232,7 +1245,6 @@
     state: 'idle',   // idle(非主页) | waiting | scanning | stopped
     username: null,
     pages: 0,
-    maxPages: Math.max(1, parseInt(GM_getValue('deepScanMaxPages', 10), 10) || 10),
     lastHeight: 0,
     stall: 0,
     since: 0,
@@ -1294,7 +1306,8 @@
     deepScan.lastHeight = h;
     window.scrollTo({ top: h });
     deepScan.pages++;
-    if (deepScan.pages >= deepScan.maxPages) deepScanStop(`已达最大翻页数 ${deepScan.maxPages}`);
+    const max = deepScanMaxPages();
+    if (max > 0 && deepScan.pages >= max) deepScanStop(`已达最大翻页数 ${max}`);
   }
 
   // ─── 状态徽章 ────────────────────────────────────────────────────────────
@@ -1393,7 +1406,8 @@
 
     // 5. 增量深采进行态
     if (deepScan.state === 'scanning') {
-      parts.push(`深采翻页 ${deepScan.pages}/${deepScan.maxPages}`);
+      const max = deepScanMaxPages();
+      parts.push(`深采翻页 ${deepScan.pages}/${max > 0 ? max : '不限'}`);
     } else if (deepScan.state === 'waiting' && currentProfile) {
       parts.push('深采等待首屏结果');
     }

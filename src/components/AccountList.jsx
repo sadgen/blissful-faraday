@@ -27,6 +27,33 @@ function openHarvest(username) {
   return `未检测到脚本桥，已前台打开 @${username}（请把油猴脚本更新到 v1.4.1+）`;
 }
 
+// 增量深采最大页数（0=不限）：存本机 localStorage 并经油猴桥同步进脚本
+// 的 GM 存储（同浏览器共享）；Instagram 页每次 tick 实时读取，改完即生效。
+const DEEP_SCAN_KEY = 'bf_deepScanMaxPages';
+const DEEP_SCAN_OPTIONS = [
+  { v: 0, label: '不限' },
+  { v: 3, label: '3' },
+  { v: 5, label: '5' },
+  { v: 10, label: '10' },
+  { v: 20, label: '20' },
+  { v: 50, label: '50' },
+];
+
+function readDeepScanMaxPages() {
+  try {
+    const v = parseInt(localStorage.getItem(DEEP_SCAN_KEY), 10);
+    return Number.isFinite(v) && v >= 0 && v <= 200 ? v : 10;
+  } catch { return 10; }
+}
+
+function pushDeepScanConfig(v) {
+  try {
+    if (typeof window !== 'undefined' && window.__bfHarvestBridge) {
+      window.postMessage({ type: 'bf-harvest-config', deepScanMaxPages: v }, '*');
+    }
+  } catch { /* 无桥时仅存本机，脚本更新后打开画廊会重新同步 */ }
+}
+
 /**
  * Instagram 账号清单（桌面 HUD 弹层与手机控制抽屉共用）。
  * 从 /api/instagram/accounts 拉取账号（帖子数/最近更新），支持按
@@ -46,6 +73,16 @@ export default function AccountList({
   const [sortKey, setSortKey] = useState('recent'); // 'recent' | 'posts'
   const [toast, setToast] = useState('');
   const toastTimerRef = useRef(null);
+  const [deepScanMax, setDeepScanMax] = useState(readDeepScanMaxPages);
+
+  // 挂载时向油猴桥推一次当前设置（脚本重装/更新后打开画廊即恢复同步）
+  useEffect(() => { pushDeepScanConfig(readDeepScanMaxPages()); }, []);
+
+  function setDeepScan(v) {
+    setDeepScanMax(v);
+    try { localStorage.setItem(DEEP_SCAN_KEY, String(v)); } catch { }
+    pushDeepScanConfig(v);
+  }
 
   function showToast(text) {
     setToast(text);
@@ -238,6 +275,38 @@ export default function AccountList({
             );
           })
         )}
+      </div>
+
+      {/* 增量深采最大页数（同步给油猴脚本；0=不限，翻到已采集帖子或主页底部才停） */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span
+          title="增量深采（首屏全新时自动往下翻页采集）的最大页数；0=不限制，遇到已采集帖子或翻到主页底部才停。改动经油猴脚本桥实时同步，Instagram 页即刻生效"
+          style={{ fontSize: dense ? '0.6rem' : '0.68rem', color: 'var(--text-muted)', flexShrink: 0, cursor: 'help' }}
+        >
+          深采页数
+        </span>
+        <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+          {DEEP_SCAN_OPTIONS.map(o => (
+            <button
+              key={o.v}
+              type="button"
+              onClick={() => setDeepScan(o.v)}
+              title={`增量深采最多自动翻 ${o.v === 0 ? '不限页数' : o.v + ' 页'}`}
+              style={{
+                background: deepScanMax === o.v ? 'var(--accent-purple)' : 'rgba(0,0,0,0.2)',
+                border: 'none',
+                color: deepScanMax === o.v ? '#fff' : 'var(--text-secondary)',
+                fontSize: dense ? '0.6rem' : '0.68rem',
+                padding: dense ? '3px 7px' : '4px 9px',
+                borderRadius: 10,
+                cursor: 'pointer',
+                fontWeight: deepScanMax === o.v ? 'bold' : 'normal',
+              }}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* 已选账号的 Instagram 主页直达链接 */}
