@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.5.0
+// @version      1.6.0
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。实时显式入库进度 + 会话累计已存统计 + 多图秒级提取与 JSON 旁听全量采集 + 画廊后台采集桥 + 增量深采。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -99,11 +99,11 @@
   // 底部，即自动停。维护中的账号只花首屏的请求；久未看的账号自动挖到旧内容
   // 为止；请求量永远只花在真正的新内容上。
   const DEEP_SCAN_ENABLED = () => GM_getValue('deepScanEnabled', true) !== false;
-  GM_registerMenuCommand((GM_getValue('deepScanEnabled', true) !== false ? '✅' : '⛔') + ' 切换：增量深采（首屏全新时自动翻页）', () => {
+  GM_registerMenuCommand((GM_getValue('deepScanEnabled', true) !== false ? '✅' : '⛔') + ' 切换：增量深采（首屏有新内容时自动翻页）', () => {
     const next = GM_getValue('deepScanEnabled', true) === false;
     GM_setValue('deepScanEnabled', next);
     alert(next
-      ? '已开启：打开个人主页若首屏全新，将自动往下翻页采集；遇到已采集帖子、翻满页数或到底即停'
+      ? '已开启：打开个人主页若首屏有新内容，将自动往下翻页采集；整批均已采集、翻满页数或到底即停'
       : '已关闭：仅采集页面自然加载的内容');
   });
   // 最大翻页数实时读 GM 存储（画廊设置面板通过桥改它，Instagram 页即刻生效）；
@@ -1239,8 +1239,8 @@
 
   // ─── 增量深采（自动翻页状态机）──────────────────────────────────────────
   // waiting（等首屏回传结果）→ scanning（自动翻页）→ stopped。
-  // 起翻条件：首屏上传全部完成且零"已采集"；停止条件：任一批回传含已采集
-  // 帖子 / 翻满最大页数 / 连续无新内容（到底）/ 首屏回传超时。
+  // 起翻条件：首屏上传完毕且有任意新内容；停止条件：某批回传整体零新 /
+  // 翻满最大页数 / 连续无新内容（到底）/ 首屏回传超时。
   const deepScan = {
     state: 'idle',   // idle(非主页) | waiting | scanning | stopped
     username: null,
@@ -1266,20 +1266,25 @@
     if (reason) flashBadge(`增量深采停止：${reason}`);
   }
 
-  // flush 回传结果驱动状态迁移（仅处理当前深采账号的批次）
+  // flush 回传结果驱动状态迁移（仅处理当前深采账号的批次）。
+  // 启动：首屏回传完毕且有任意新内容——有新帖说明账号在更新，首屏之外可能
+  // 还有没被时间线带到的新帖；整批零新（含纯已采集）不翻。
+  // 停止：某一批回传整体零新 = 已越过新内容边界（时间线采集/置顶旧帖
+  // 不会再卡死深采）；页数上限 / 到底 / 超时照旧。
   function deepScanOnFlush(username, downloaded, skipped) {
     if (username !== deepScan.username) return;
     if (deepScan.state === 'waiting') {
-      if (skipped > 0) { deepScanStop('首屏遇到已采集帖子'); return; }
-      // 首屏积压全部回传完毕且全为新帖 → 开始自动翻页
       const pending = pendingByUser.get(username);
-      if ((!pending || pending.size === 0) && downloaded > 0) {
+      if (pending && pending.size > 0) return; // 首屏还没回传完，继续等
+      if (downloaded > 0) {
         deepScan.state = 'scanning';
         deepScan.since = Date.now();
-        flashBadge('增量深采开始：首屏全新，自动往下翻页');
+        flashBadge('增量深采开始：首屏有新内容，自动往下翻页');
+      } else {
+        deepScanStop('首屏无新内容');
       }
     } else if (deepScan.state === 'scanning') {
-      if (skipped > 0) deepScanStop(`第 ${deepScan.pages} 页遇到已采集帖子`);
+      if (downloaded === 0 && skipped > 0) deepScanStop('本批已全部采集过');
     }
   }
 

@@ -12,19 +12,32 @@ function relativeTime(ms) {
   return new Date(ms).toLocaleDateString('zh-CN');
 }
 
-// 后台采集：优先走油猴脚本（v1.4.0+）注入的桥，在后台标签页打开该账号的
-// Instagram 主页——首屏采集自动开始，不打断当前浏览；未装/未更新脚本时
-// 降级为新标签页前台打开（采集同样自动开始）。
-// 返回提示文案：让用户立刻知道走的哪条路（移动端浏览器即使有桥也可能
-// 强制前台打开，属浏览器限制，采集不受影响）。
+// 后台采集：
+// · 桌面（指针精确+宽屏）：打开一个固定复用的独立小窗加载该账号主页——
+//   小窗保持可见即可触发 Instagram 的滚动分页，深采全自动跑完，不占用
+//   焦点也不遮挡画廊主窗；无需油猴桥，脚本在小窗内自治采集。
+// · 手机：走油猴桥（v1.4.0+）GM_openInTab 后台标签采首屏（深采等该标签
+//   页可见时自动继续）；无桥降级前台新标签。
+// 返回提示文案：让用户立刻知道走的哪条路。
 function openHarvest(username) {
   const url = `https://www.instagram.com/${encodeURIComponent(username)}/`;
+  const desktopLike = typeof window.matchMedia === 'function'
+    && !window.matchMedia('(pointer: coarse)').matches
+    && window.innerWidth >= 768;
+  if (desktopLike) {
+    const w = Math.min(460, Math.max(360, Math.round(window.innerWidth * 0.28)));
+    const h = Math.min(760, Math.max(560, Math.round(window.innerHeight * 0.82)));
+    const left = Math.max(0, (window.screen && window.screen.availWidth ? window.screen.availWidth : 1280) - w - 24);
+    const win = window.open(url, 'bf_harvest_win', `width=${w},height=${h},left=${left},top=56`);
+    if (win) return `已在小窗打开 @${username}（小窗保持可见即自动深采，翻完自停；再次点击会复用同一小窗）`;
+    // 小窗被弹窗拦截 → 落回桥/后台标签路径
+  }
   if (typeof window !== 'undefined' && window.__bfHarvestBridge) {
     window.postMessage({ type: 'bf-harvest-open', username }, '*');
-    return `已交脚本后台打开 @${username}（若被切到前台，是浏览器不支持后台标签，采集照常）`;
+    return `已交脚本后台打开 @${username}（首屏照常采集；深采需切到该标签页让它可见）`;
   }
   window.open(url, '_blank', 'noopener');
-  return `未检测到脚本桥，已前台打开 @${username}（请把油猴脚本更新到 v1.4.1+）`;
+  return `未检测到脚本桥，已前台打开 @${username}（请把油猴脚本更新到 v1.6.0+）`;
 }
 
 // 增量深采最大页数（0=不限）：存本机 localStorage 并经油猴桥同步进脚本
@@ -280,7 +293,7 @@ export default function AccountList({
       {/* 增量深采最大页数（同步给油猴脚本；0=不限，翻到已采集帖子或主页底部才停） */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
         <span
-          title="增量深采（首屏全新时自动往下翻页采集）的最大页数；0=不限制，遇到已采集帖子或翻到主页底部才停。改动经油猴脚本桥实时同步，Instagram 页即刻生效"
+          title="增量深采（首屏有新内容时自动往下翻页采集）的最大页数；0=不限制，整批均已采集或翻到主页底部才停。改动经油猴脚本桥实时同步，Instagram 页即刻生效"
           style={{ fontSize: dense ? '0.6rem' : '0.68rem', color: 'var(--text-muted)', flexShrink: 0, cursor: 'help' }}
         >
           深采页数
@@ -341,7 +354,7 @@ export default function AccountList({
                 <button
                   type="button"
                   onClick={() => showToast(openHarvest(u))}
-                  title={`后台打开 @${u} 主页并自动采集首屏（不影响当前页面）。若首次点击在前台打开，说明该浏览器还未装/未更新油猴脚本到 v1.4.0`}
+                  title={`采集 @${u}：桌面=独立小窗（可见即自动深采）；手机=后台标签采首屏（深采需切到该标签页）。若手机点击前台打开了，说明还未装/更新油猴脚本`}
                   style={{
                     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                     background: 'rgba(168, 85, 247, 0.14)',
