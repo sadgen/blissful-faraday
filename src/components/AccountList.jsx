@@ -27,7 +27,11 @@ let harvestWinUser = null;
 // 返回提示文案：让用户立刻知道走的哪条路。
 function openHarvest(username) {
   const url = `https://www.instagram.com/${encodeURIComponent(username)}/`;
-  const desktopLike = typeof window.matchMedia === 'function'
+  // 桌面判定与画廊 App 的 isMobile 同源：UA 是移动端一律不算桌面
+  // （部分手机浏览器会报宽视口+精确指针，单看这两项会把手机误进小窗路径）
+  const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  const desktopLike = !isMobileUA
+    && typeof window.matchMedia === 'function'
     && !window.matchMedia('(pointer: coarse)').matches
     && window.innerWidth >= 768;
   if (desktopLike) {
