@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.6.2
+// @version      1.6.3
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。实时显式入库进度 + 会话累计已存统计 + 多图秒级提取与 JSON 旁听全量采集 + 画廊后台采集桥 + 增量深采。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -1272,7 +1272,27 @@
     lastHeight: 0,
     stall: 0,
     since: 0,
+    scroller: null,  // 已定位到的实际滚动容器（IG 某些版本内容不在 window 滚动）
   };
+
+  // 找真正能滚动的容器：优先 document 滚动面；不行则找视口内最大的可滚动后代
+  function deepScanScroller() {
+    const se = document.scrollingElement || document.documentElement;
+    if (se && se.scrollHeight > se.clientHeight + 40) return se;
+    let best = null;
+    let bestH = 0;
+    try {
+      document.querySelectorAll('div, main, section').forEach(el => {
+        if (el.clientHeight < 300) return;
+        const oy = getComputedStyle(el).overflowY;
+        if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 40 && el.clientHeight > bestH) {
+          best = el;
+          bestH = el.clientHeight;
+        }
+      });
+    } catch { }
+    return best || se;
+  }
 
   function deepScanReset() {
     const username = profileFromPath();
@@ -1323,18 +1343,23 @@
     if (document.visibilityState !== 'visible') return;
     // 翻页途中 SPA 跳走/换账号 → 按新主页重新判定
     if (profileFromPath() !== deepScan.username) { deepScanReset(); return; }
-    const doc = document.scrollingElement || document.documentElement;
-    if (!doc) return;
-    const h = doc.scrollHeight;
-    if (deepScan.lastHeight && h <= deepScan.lastHeight) {
-      deepScan.stall++;
-      if (deepScan.stall >= 4) deepScanStop('已到主页底部');
-      return;
+    const sc = deepScanScroller();
+    if (!sc) return;
+    const atBottom = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 60;
+    if (atBottom) {
+      // 已在底部：高度不再增长说明 IG 没有更多内容了
+      if (deepScan.lastHeight && sc.scrollHeight <= deepScan.lastHeight) {
+        deepScan.stall++;
+        if (deepScan.stall >= 4) { deepScanStop('已到主页底部'); return; }
+      } else {
+        deepScan.stall = 0;
+      }
+      deepScan.lastHeight = sc.scrollHeight;
     }
-    deepScan.stall = 0;
-    deepScan.lastHeight = h;
-    window.scrollTo({ top: h });
+    // 每拍平滑下滚约一屏：可见、类人，且无论 window 还是内部容器都触发分页
+    sc.scrollBy({ top: Math.max(300, Math.round(sc.clientHeight * 0.85)), behavior: 'smooth' });
     deepScan.pages++;
+    renderBadge();
     const max = deepScanMaxPages();
     if (max > 0 && deepScan.pages >= max) deepScanStop(`已达最大翻页数 ${max}`);
   }
