@@ -5,6 +5,7 @@ import ErrorBoundary from './ErrorBoundary';
 import MobileControlSheet from './MobileControlSheet';
 import FaradaySuiteMenu from './FaradaySuiteMenu';
 import MediaGridView from './MediaGridView';
+import useOverlayBackClose from '../hooks/useOverlayBackClose';
 import '../mobile.css';
 
 // Calculate mobile tile coordinates in viewport percentage space
@@ -170,6 +171,11 @@ export default function MobileLayout({
   const [showZoomSlider, setShowZoomSlider] = useState(false);
   const [isGridViewOpen, setIsGridViewOpen] = useState(false);
   const sliderTimeoutRef = useRef(null);
+
+  // 手机返回键/边缘侧滑：配置抽屉与平铺检视打开时只收起浮层。
+  // 注意声明顺序在前：与平铺检视同拍交接时先释放抽屉的哨兵，检视再继承。
+  useOverlayBackClose(isSettingsOpen, () => setIsSettingsOpen(false));
+  useOverlayBackClose(isGridViewOpen, () => setIsGridViewOpen(false));
 
   // Remaining queue: tracks collections not yet shown this session (never repeats)
   const remainingQueueRef = useRef([]);
