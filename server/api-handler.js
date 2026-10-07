@@ -758,6 +758,14 @@ export function createApiHandler() {
           content = content.split('https://gallery.example.com:8443').join(origin)
                            .split('gallery.example.com').join(hostname);
         }
+        // bf-local.example 模板按本次请求的 Host 替换：无论从公网域名、局域网
+        // IP 还是 localhost 访问画廊，@match 都命中当前入口，后台采集桥可注入
+        try {
+          const reqHostname = new URL(`http://${req.headers.host || ''}`).hostname;
+          if (reqHostname && /^[A-Za-z0-9.\-]+$/.test(reqHostname)) {
+            content = content.split('bf-local.example').join(reqHostname);
+          }
+        } catch { /* Host 异常时保留模板原样 */ }
         res.end(content);
         return;
       }

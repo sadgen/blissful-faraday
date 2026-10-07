@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, X, Instagram } from 'lucide-react';
+import { RefreshCw, X, Instagram, Download } from 'lucide-react';
 
 // 相对时间：账号面板里展示"最近更新"
 function relativeTime(ms) {
@@ -10,6 +10,18 @@ function relativeTime(ms) {
   if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
   if (diff < 86400000 * 30) return `${Math.floor(diff / 86400000)} 天前`;
   return new Date(ms).toLocaleDateString('zh-CN');
+}
+
+// 后台采集：优先走油猴脚本（v1.4.0+）注入的桥，在后台标签页打开该账号的
+// Instagram 主页——首屏采集自动开始，不打断当前浏览；未装/未更新脚本时
+// 降级为新标签页前台打开（采集同样自动开始）。
+function openHarvest(username) {
+  const url = `https://www.instagram.com/${encodeURIComponent(username)}/`;
+  if (typeof window !== 'undefined' && window.__bfHarvestBridge) {
+    window.postMessage({ type: 'bf-harvest-open', username }, '*');
+    return;
+  }
+  window.open(url, '_blank', 'noopener');
 }
 
 /**
@@ -219,31 +231,48 @@ export default function AccountList({
       {selected.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span style={{ fontSize: dense ? '0.6rem' : '0.68rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-            <Instagram size={dense ? 10 : 12} /> 已选账号主页
+            <Instagram size={dense ? 10 : 12} /> 已选账号主页（⬇ = 后台采集）
           </span>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
             {selected.map(u => (
-              <a
-                key={u}
-                href={`https://www.instagram.com/${encodeURIComponent(u)}/`}
-                target="_blank"
-                rel="noreferrer noopener"
-                title={`打开 @${u} 的 Instagram 主页`}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 4,
-                  background: 'rgba(168, 85, 247, 0.14)',
-                  border: '1px solid rgba(168, 85, 247, 0.4)',
-                  color: '#d8b4fe',
-                  fontSize: dense ? '0.6rem' : '0.7rem',
-                  padding: dense ? '3px 7px' : '4px 9px',
-                  borderRadius: 12,
-                  textDecoration: 'none',
-                  cursor: 'pointer',
-                }}
-              >
-                <Instagram size={dense ? 10 : 12} />
-                @{u} ↗
-              </a>
+              <span key={u} style={{ display: 'inline-flex', alignItems: 'stretch', gap: 3 }}>
+                <a
+                  href={`https://www.instagram.com/${encodeURIComponent(u)}/`}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  title={`打开 @${u} 的 Instagram 主页（Ctrl/中键点击=后台标签页）`}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    background: 'rgba(168, 85, 247, 0.14)',
+                    border: '1px solid rgba(168, 85, 247, 0.4)',
+                    color: '#d8b4fe',
+                    fontSize: dense ? '0.6rem' : '0.7rem',
+                    padding: dense ? '3px 7px' : '4px 9px',
+                    borderRadius: 12,
+                    textDecoration: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Instagram size={dense ? 10 : 12} />
+                  @{u} ↗
+                </a>
+                <button
+                  type="button"
+                  onClick={() => openHarvest(u)}
+                  title={`后台打开 @${u} 主页并自动采集首屏（不影响当前页面）。若首次点击在前台打开，说明该浏览器还未装/未更新油猴脚本到 v1.4.0`}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    background: 'rgba(168, 85, 247, 0.14)',
+                    border: '1px solid rgba(168, 85, 247, 0.4)',
+                    color: '#d8b4fe',
+                    borderRadius: 12,
+                    padding: dense ? '3px 5px' : '4px 6px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Download size={dense ? 10 : 12} />
+                </button>
+              </span>
             ))}
           </div>
         </div>

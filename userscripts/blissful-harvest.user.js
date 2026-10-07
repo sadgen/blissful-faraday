@@ -1,13 +1,17 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.3.6
-// @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。实时显式入库进度 + 会话累计已存统计 + 多图秒级提取与 JSON 旁听全量采集。
+// @version      1.4.0
+// @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。实时显式入库进度 + 会话累计已存统计 + 多图秒级提取与 JSON 旁听全量采集 + 画廊后台采集桥 + 增量深采。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @match        https://www.instagram.com/*
+// @match        https://gallery.example.com/*
+// @match        http://localhost/*
+// @match        http://bf-local.example/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
+// @grant        GM_openInTab
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -21,6 +25,28 @@
 
 (function () {
   'use strict';
+
+  // ─── 运行环境分流 ────────────────────────────────────────────────────────
+  //  Instagram 页面 = 采集端（本文件主体，见下方各区块）。
+  //  画廊页面 = 后台采集桥：画廊「后台采集」按钮 postMessage 过来账号名，
+  //  用 GM_openInTab(active:false) 在后台标签打开对应 Instagram 主页——
+  //  页面加载后首屏采集自动开始，不打断当前正在浏览的画廊页面。
+  const ON_INSTAGRAM = /(^|\.)instagram\.com$/i.test(location.hostname);
+  if (!ON_INSTAGRAM) {
+    try {
+      const uw = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+      uw.__bfHarvestBridge = true; // 画廊据此判断桥可用，决定后台/前台打开
+      window.addEventListener('message', (ev) => {
+        const d = ev && ev.data;
+        if (!d || d.type !== 'bf-harvest-open' || typeof d.username !== 'string') return;
+        if (!/^[A-Za-z0-9._]{1,30}$/.test(d.username)) return;
+        const url = `https://www.instagram.com/${encodeURIComponent(d.username)}/`;
+        try { GM_openInTab(url, { active: false, insert: true }); }
+        catch { try { GM_openInTab(url, true); } catch { } }
+      });
+    } catch { }
+    return;
+  }
 
   // ─── 配置 ────────────────────────────────────────────────────────────────
   // 同步目标是画廊服务器，与浏览用的电脑无关：在任何设备上刷到的图，
@@ -58,6 +84,23 @@
     alert(next
       ? '已开启：旁听 Instagram 自己的接口响应，主页多图帖的全部图片无需点开即全量入库（零额外请求）'
       : '已关闭：仅采集页面上实际渲染出来的媒体');
+  });
+
+  // 「增量深采」：打开个人主页若首屏全是未采集的新帖，自动往下翻页加载更多；
+  // 一旦某批回传遇到已入库帖子（新内容已见底）、或翻满最大页数、或已到主页
+  // 底部，即自动停。维护中的账号只花首屏的请求；久未看的账号自动挖到旧内容
+  // 为止；请求量永远只花在真正的新内容上。
+  const DEEP_SCAN_ENABLED = () => GM_getValue('deepScanEnabled', true) !== false;
+  GM_registerMenuCommand((GM_getValue('deepScanEnabled', true) !== false ? '✅' : '⛔') + ' 切换：增量深采（首屏全新时自动翻页）', () => {
+    const next = GM_getValue('deepScanEnabled', true) === false;
+    GM_setValue('deepScanEnabled', next);
+    alert(next
+      ? '已开启：打开个人主页若首屏全新，将自动往下翻页采集；遇到已采集帖子、翻满页数或到底即停'
+      : '已关闭：仅采集页面自然加载的内容');
+  });
+  GM_registerMenuCommand('设置增量深采最大翻页数（当前 ' + GM_getValue('deepScanMaxPages', 10) + '）', () => {
+    const v = parseInt(prompt('最多自动翻多少页（约等于加载批次），达到后停止深采：', String(GM_getValue('deepScanMaxPages', 10))), 10);
+    if (Number.isFinite(v) && v >= 1 && v <= 200) GM_setValue('deepScanMaxPages', v);
   });
   const ADDRESS_PROMPT = 'blissful-faraday 画廊地址（填好后需在该浏览器登录一次画廊）\n'
     + '· 推荐：https://gallery.example.com:8443 （地址固定，任何网络可用）\n'
@@ -704,6 +747,7 @@
 
     // 1) 个人主页：整页媒体都归属当前用户
     const username = profileFromPath();
+    if (username !== deepScan.username) deepScanReset(); // SPA 换页/换账号时重判深采状态
     if (username) {
       if (!pendingByUser.has(username)) pendingByUser.set(username, new Map());
       const pending = pendingByUser.get(username);
@@ -787,6 +831,7 @@
             const f = Number(data.failed) || 0;
             sessionStats.downloaded += d;
             sessionStats.skipped += s;
+            deepScanOnFlush(username, d, s);
 
             if (d > 0 || f > 0) {
               flashBadge(`@${username} 新存 ${d}` + (s ? ` · 跳过已存 ${s}` : '') + (f ? ` · 失败 ${f}` : ''));
@@ -795,6 +840,7 @@
             }
           } else if (res.status === 401) {
             items.forEach(it => failedCount.set(it.key, 3)); // 未登录：本会话不再重试
+            deepScanStop('请先登录画廊');
             flashBadge('请先在浏览器登录画廊，再刷新 Instagram');
           } else {
             items.forEach(it => failedCount.set(it.key, (failedCount.get(it.key) || 0) + 1));
@@ -1177,6 +1223,79 @@
     });
   }
 
+  // ─── 增量深采（自动翻页状态机）──────────────────────────────────────────
+  // waiting（等首屏回传结果）→ scanning（自动翻页）→ stopped。
+  // 起翻条件：首屏上传全部完成且零"已采集"；停止条件：任一批回传含已采集
+  // 帖子 / 翻满最大页数 / 连续无新内容（到底）/ 首屏回传超时。
+  const deepScan = {
+    state: 'idle',   // idle(非主页) | waiting | scanning | stopped
+    username: null,
+    pages: 0,
+    maxPages: Math.max(1, parseInt(GM_getValue('deepScanMaxPages', 10), 10) || 10),
+    lastHeight: 0,
+    stall: 0,
+    since: 0,
+  };
+
+  function deepScanReset() {
+    const username = profileFromPath();
+    deepScan.username = username;
+    deepScan.state = (username && DEEP_SCAN_ENABLED()) ? 'waiting' : 'idle';
+    deepScan.pages = 0;
+    deepScan.lastHeight = 0;
+    deepScan.stall = 0;
+    deepScan.since = Date.now();
+  }
+
+  function deepScanStop(reason) {
+    if (deepScan.state === 'stopped' || deepScan.state === 'idle') return;
+    deepScan.state = 'stopped';
+    if (reason) flashBadge(`增量深采停止：${reason}`);
+  }
+
+  // flush 回传结果驱动状态迁移（仅处理当前深采账号的批次）
+  function deepScanOnFlush(username, downloaded, skipped) {
+    if (username !== deepScan.username) return;
+    if (deepScan.state === 'waiting') {
+      if (skipped > 0) { deepScanStop('首屏遇到已采集帖子'); return; }
+      // 首屏积压全部回传完毕且全为新帖 → 开始自动翻页
+      const pending = pendingByUser.get(username);
+      if ((!pending || pending.size === 0) && downloaded > 0) {
+        deepScan.state = 'scanning';
+        deepScan.since = Date.now();
+        flashBadge('增量深采开始：首屏全新，自动往下翻页');
+      }
+    } else if (deepScan.state === 'scanning') {
+      if (skipped > 0) deepScanStop(`第 ${deepScan.pages} 页遇到已采集帖子`);
+    }
+  }
+
+  function deepScanTick() {
+    if (deepScan.state === 'waiting') {
+      // 迟迟拿不到首屏回传结果（网络慢/未登录画廊）→ 放弃本次深采
+      if (Date.now() - deepScan.since > 45000) deepScanStop('首屏回传超时');
+      return;
+    }
+    if (deepScan.state !== 'scanning') return;
+    // 后台标签不渲染，IG 的滚动分页不会触发，滚了也白滚；等标签页可见再继续
+    if (document.visibilityState !== 'visible') return;
+    // 翻页途中 SPA 跳走/换账号 → 按新主页重新判定
+    if (profileFromPath() !== deepScan.username) { deepScanReset(); return; }
+    const doc = document.scrollingElement || document.documentElement;
+    if (!doc) return;
+    const h = doc.scrollHeight;
+    if (deepScan.lastHeight && h <= deepScan.lastHeight) {
+      deepScan.stall++;
+      if (deepScan.stall >= 4) deepScanStop('已到主页底部');
+      return;
+    }
+    deepScan.stall = 0;
+    deepScan.lastHeight = h;
+    window.scrollTo({ top: h });
+    deepScan.pages++;
+    if (deepScan.pages >= deepScan.maxPages) deepScanStop(`已达最大翻页数 ${deepScan.maxPages}`);
+  }
+
   // ─── 状态徽章 ────────────────────────────────────────────────────────────
   const badge = document.createElement('div');
   badge.style.cssText = [
@@ -1271,6 +1390,13 @@
       parts.push(`已核验 ${sessionStats.skipped}`);
     }
 
+    // 5. 增量深采进行态
+    if (deepScan.state === 'scanning') {
+      parts.push(`深采翻页 ${deepScan.pages}/${deepScan.maxPages}`);
+    } else if (deepScan.state === 'waiting' && currentProfile) {
+      parts.push('深采等待首屏结果');
+    }
+
     setBadge(`📥 ${targetLabel} · ${parts.join(' · ')}`);
   }
 
@@ -1291,7 +1417,9 @@
 
   hookNetwork();       // 旁听播放器的视频分片请求（用于零请求拼装）
   initPerfObserver();  // 记录播放器的实际视频链接（用于完整 GET 下载）
+  deepScanReset();     // 增量深采状态初始化（个人主页进入 waiting）
   setInterval(scan, 1500);
+  setInterval(deepScanTick, 2500);
   setInterval(() => { flush(); processBlobQueue(); }, 5000);
   scan();
 })();
