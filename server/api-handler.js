@@ -766,6 +766,20 @@ export function createApiHandler() {
             content = content.split('bf-local.example').join(reqHostname);
           }
         } catch { /* Host 异常时保留模板原样 */ }
+        // 展开 @match-bf-lan 为服务器本机局域网地址的 @match：脚本自动更新走的
+        // 入口与设备实际访问画廊的入口可能不同（经反代时 Host 是公网域名，
+        // 服务器 LAN IP 不会出现在任何替换里），在服务端按网卡现取现注入，
+        // 真实内网地址只存在于分发响应中，不入库
+        try {
+          const lanIps = [];
+          for (const list of Object.values(os.networkInterfaces())) {
+            for (const it of list || []) {
+              if (it.family === 'IPv4' && !it.internal) lanIps.push(it.address);
+            }
+          }
+          const lanMatches = lanIps.map(ip => `// @match        http://${ip}/*`).join('\n');
+          content = content.split('// @match-bf-lan').join(lanMatches || '// @match-bf-lan-无可用内网地址');
+        } catch { /* 取网卡失败时保留模板原样 */ }
         res.end(content);
         return;
       }

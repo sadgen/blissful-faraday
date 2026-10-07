@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { RefreshCw, X, Instagram, Download } from 'lucide-react';
 
 // 相对时间：账号面板里展示"最近更新"
@@ -15,13 +15,16 @@ function relativeTime(ms) {
 // 后台采集：优先走油猴脚本（v1.4.0+）注入的桥，在后台标签页打开该账号的
 // Instagram 主页——首屏采集自动开始，不打断当前浏览；未装/未更新脚本时
 // 降级为新标签页前台打开（采集同样自动开始）。
+// 返回提示文案：让用户立刻知道走的哪条路（移动端浏览器即使有桥也可能
+// 强制前台打开，属浏览器限制，采集不受影响）。
 function openHarvest(username) {
   const url = `https://www.instagram.com/${encodeURIComponent(username)}/`;
   if (typeof window !== 'undefined' && window.__bfHarvestBridge) {
     window.postMessage({ type: 'bf-harvest-open', username }, '*');
-    return;
+    return `已交脚本后台打开 @${username}（若被切到前台，是浏览器不支持后台标签，采集照常）`;
   }
   window.open(url, '_blank', 'noopener');
+  return `未检测到脚本桥，已前台打开 @${username}（请把油猴脚本更新到 v1.4.1+）`;
 }
 
 /**
@@ -41,6 +44,16 @@ export default function AccountList({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [sortKey, setSortKey] = useState('recent'); // 'recent' | 'posts'
+  const [toast, setToast] = useState('');
+  const toastTimerRef = useRef(null);
+
+  function showToast(text) {
+    setToast(text);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(''), 3500);
+  }
+
+  useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
 
   // 兼容旧版单选字符串
   const selected = Array.isArray(accountFilter)
@@ -258,7 +271,7 @@ export default function AccountList({
                 </a>
                 <button
                   type="button"
-                  onClick={() => openHarvest(u)}
+                  onClick={() => showToast(openHarvest(u))}
                   title={`后台打开 @${u} 主页并自动采集首屏（不影响当前页面）。若首次点击在前台打开，说明该浏览器还未装/未更新油猴脚本到 v1.4.0`}
                   style={{
                     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -275,6 +288,22 @@ export default function AccountList({
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* 后台采集点击反馈 */}
+      {toast && (
+        <div
+          style={{
+            position: 'fixed', bottom: 84, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 1200, maxWidth: '86vw',
+            background: 'rgba(20,20,28,.92)', color: '#e8e6f0',
+            border: '1px solid rgba(168,85,247,0.5)', borderRadius: 12,
+            padding: '8px 14px', fontSize: '0.72rem', lineHeight: 1.5,
+            boxShadow: '0 4px 18px rgba(0,0,0,.5)', pointerEvents: 'none',
+          }}
+        >
+          {toast}
         </div>
       )}
     </div>

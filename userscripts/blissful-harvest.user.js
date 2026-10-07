@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.4.0
+// @version      1.4.1
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。实时显式入库进度 + 会话累计已存统计 + 多图秒级提取与 JSON 旁听全量采集 + 画廊后台采集桥 + 增量深采。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -9,6 +9,7 @@
 // @match        https://gallery.example.com/*
 // @match        http://localhost/*
 // @match        http://bf-local.example/*
+// @match-bf-lan
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @grant        GM_openInTab
