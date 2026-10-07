@@ -84,6 +84,20 @@ function pushDeepScanConfig(v) {
   } catch { /* 无桥时仅存本机，脚本更新后打开画廊会重新同步 */ }
 }
 
+// 批量关闭采集页：桌面小窗直接 close；手机后台标签经桥关闭（桥回报数量后提示）
+function closeAllHarvestPages() {
+  const msgs = [];
+  if (typeof window !== 'undefined' && harvestWinRef && !harvestWinRef.closed) {
+    try { harvestWinRef.close(); msgs.push('已关闭采集小窗'); } catch { }
+  }
+  harvestWinUser = null;
+  if (typeof window !== 'undefined' && window.__bfHarvestBridge) {
+    window.postMessage({ type: 'bf-harvest-close-all' }, '*');
+    return msgs.length ? msgs.join('；') : null; // 后台标签数量由桥回报后提示
+  }
+  return msgs.length ? msgs.join('；') : '没有可关闭的采集页';
+}
+
 /**
  * Instagram 账号清单（桌面 HUD 弹层与手机控制抽屉共用）。
  * 从 /api/instagram/accounts 拉取账号（帖子数/最近更新），支持按
@@ -112,9 +126,10 @@ export default function AccountList({
   useEffect(() => {
     function onBridgeResult(e) {
       const d = e && e.data;
-      if (!d || d.type !== 'bf-harvest-result' || typeof d.username !== 'string') return;
-      if (d.action === 'exists') showToast(`@${d.username} 的采集页已在后台，未重复打开`);
-      else if (d.action === 'failed') showToast(`@${d.username} 打开失败（脚本管理器拒绝），可稍后重试`);
+      if (!d || d.type !== 'bf-harvest-result') return;
+      if (d.action === 'exists' && typeof d.username === 'string') showToast(`@${d.username} 的采集页已在后台，未重复打开`);
+      else if (d.action === 'failed' && typeof d.username === 'string') showToast(`@${d.username} 打开失败（脚本管理器拒绝），可稍后重试`);
+      else if (d.action === 'closed-all' && Number(d.count) > 0) showToast(`已关闭 ${d.count} 个后台采集页`);
     }
     window.addEventListener('message', onBridgeResult);
     return () => window.removeEventListener('message', onBridgeResult);
@@ -354,9 +369,30 @@ export default function AccountList({
       {/* 已选账号的 Instagram 主页直达链接 */}
       {selected.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: dense ? '0.6rem' : '0.68rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-            <Instagram size={dense ? 10 : 12} /> 已选账号主页（⬇ = 后台采集）
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: dense ? '0.6rem' : '0.68rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, flex: 1 }}>
+              <Instagram size={dense ? 10 : 12} /> 已选账号主页（⬇ = 后台采集）
+            </span>
+            <button
+              type="button"
+              onClick={() => { const m = closeAllHarvestPages(); if (m) showToast(m); }}
+              title="批量关闭已打开的采集页（桌面采集小窗 + 手机后台采集标签）。刚点开的页面里未回传完的内容会丢失，建议等几十秒再关"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 3,
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid rgba(255,255,255,0.12)',
+                color: 'var(--text-muted)',
+                fontSize: dense ? '0.55rem' : '0.62rem',
+                padding: dense ? '2px 6px' : '3px 8px',
+                borderRadius: 10,
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              <X size={dense ? 9 : 11} />
+              关闭采集页
+            </button>
+          </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
             {selected.map(u => (
               <span key={u} style={{ display: 'inline-flex', alignItems: 'stretch', gap: 3 }}>
