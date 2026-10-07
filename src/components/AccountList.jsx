@@ -12,12 +12,18 @@ function relativeTime(ms) {
   return new Date(ms).toLocaleDateString('zh-CN');
 }
 
+// 桌面小窗状态（模块级：跨 AccountList 挂载共享，桌面复用同一采集小窗）
+let harvestWinRef = null;
+let harvestWinUser = null;
+
 // 后台采集：
 // · 桌面（指针精确+宽屏）：打开一个固定复用的独立小窗加载该账号主页——
 //   小窗保持可见即可触发 Instagram 的滚动分页，深采全自动跑完，不占用
 //   焦点也不遮挡画廊主窗；无需油猴桥，脚本在小窗内自治采集。
+//   同一账号小窗已开着就不重复打开；换账号则复用小窗导航过去。
 // · 手机：走油猴桥（v1.4.0+）GM_openInTab 后台标签采首屏（深采等该标签
-//   页可见时自动继续）；无桥降级前台新标签。
+//   页可见时自动继续）；桥侧会对已开着的同账号标签去重并回报
+//   bf-harvest-result；无桥降级前台新标签。
 // 返回提示文案：让用户立刻知道走的哪条路。
 function openHarvest(username) {
   const url = `https://www.instagram.com/${encodeURIComponent(username)}/`;
@@ -25,11 +31,18 @@ function openHarvest(username) {
     && !window.matchMedia('(pointer: coarse)').matches
     && window.innerWidth >= 768;
   if (desktopLike) {
+    if (harvestWinRef && !harvestWinRef.closed && harvestWinUser === username) {
+      return `@${username} 已在小窗打开，未重复打开`;
+    }
     const w = Math.min(460, Math.max(360, Math.round(window.innerWidth * 0.28)));
     const h = Math.min(760, Math.max(560, Math.round(window.innerHeight * 0.82)));
     const left = Math.max(0, (window.screen && window.screen.availWidth ? window.screen.availWidth : 1280) - w - 24);
     const win = window.open(url, 'bf_harvest_win', `width=${w},height=${h},left=${left},top=56`);
-    if (win) return `已在小窗打开 @${username}（小窗保持可见即自动深采，翻完自停；再次点击会复用同一小窗）`;
+    if (win) {
+      harvestWinRef = win;
+      harvestWinUser = username;
+      return `已在小窗打开 @${username}（小窗保持可见即自动深采，翻完自停；再次点击会复用同一小窗）`;
+    }
     // 小窗被弹窗拦截 → 落回桥/后台标签路径
   }
   if (typeof window !== 'undefined' && window.__bfHarvestBridge) {
@@ -90,6 +103,18 @@ export default function AccountList({
 
   // 挂载时向油猴桥推一次当前设置（脚本重装/更新后打开画廊即恢复同步）
   useEffect(() => { pushDeepScanConfig(readDeepScanMaxPages()); }, []);
+
+  // 桥侧对「同账号已开着的采集标签」去重后回报结果，覆盖默认提示
+  useEffect(() => {
+    function onBridgeResult(e) {
+      const d = e && e.data;
+      if (!d || d.type !== 'bf-harvest-result' || typeof d.username !== 'string') return;
+      if (d.action === 'exists') showToast(`@${d.username} 的采集页已在后台，未重复打开`);
+      else if (d.action === 'failed') showToast(`@${d.username} 打开失败（脚本管理器拒绝），可稍后重试`);
+    }
+    window.addEventListener('message', onBridgeResult);
+    return () => window.removeEventListener('message', onBridgeResult);
+  }, []);
 
   function setDeepScan(v) {
     setDeepScanMax(v);

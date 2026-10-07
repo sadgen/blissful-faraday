@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blissful Faraday — Instagram 浏览同步
 // @namespace    blissful-faraday
-// @version      1.6.0
+// @version      1.6.1
 // @description  正常浏览 Instagram 时，把看过的图片/视频自动同步到本地 blissful-faraday 画廊。实时显式入库进度 + 会话累计已存统计 + 多图秒级提取与 JSON 旁听全量采集 + 画廊后台采集桥 + 增量深采。
 // @updateURL    https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
 // @downloadURL  https://gallery.example.com:8443/userscripts/blissful-harvest.user.js
@@ -37,6 +37,8 @@
     try {
       const uw = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
       uw.__bfHarvestBridge = true; // 画廊据此判断桥可用，决定后台/前台打开
+      const harvestTabs = new Map(); // username -> GM_openInTab 返回对象（画廊页存续期内去重）
+      const reply = (msg) => { try { window.postMessage(msg, '*'); } catch { } };
       window.addEventListener('message', (ev) => {
         const d = ev && ev.data;
         if (!d || typeof d !== 'object') return;
@@ -48,9 +50,21 @@
         }
         if (d.type !== 'bf-harvest-open' || typeof d.username !== 'string') return;
         if (!/^[A-Za-z0-9._]{1,30}$/.test(d.username)) return;
+        // 该账号的采集标签页还开着 → 不重复开，回报画廊
+        const prev = harvestTabs.get(d.username);
+        if (prev && !prev.closed) {
+          reply({ type: 'bf-harvest-result', username: d.username, action: 'exists' });
+          return;
+        }
         const url = `https://www.instagram.com/${encodeURIComponent(d.username)}/`;
-        try { GM_openInTab(url, { active: false, insert: true }); }
-        catch { try { GM_openInTab(url, true); } catch { } }
+        let tab = null;
+        try { tab = GM_openInTab(url, { active: false, insert: true }); }
+        catch { try { tab = GM_openInTab(url, true); } catch { } }
+        if (tab) {
+          harvestTabs.set(d.username, tab);
+          try { tab.onclosed = () => harvestTabs.delete(d.username); } catch { }
+        }
+        reply({ type: 'bf-harvest-result', username: d.username, action: tab ? 'opened' : 'failed' });
       });
     } catch { }
     return;
