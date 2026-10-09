@@ -12,6 +12,7 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'url';
 import { createApiHandler, getActiveDir } from './api-handler.js';
 import * as personDetector from './person-detector.js';
@@ -92,14 +93,14 @@ function serveStatic(req, res) {
     }
     res.writeHead(200, headers);
     if (req.method === 'HEAD') { res.end(); return; }
-    fs.createReadStream(resolved).pipe(res);
+    pipeline(fs.createReadStream(resolved), res).catch(err => console.warn('[Static stream]', err.message));
   } else {
     // SPA fallback — serve index.html for any unmatched path
     const indexPath = path.join(distDir, 'index.html');
     if (fs.existsSync(indexPath)) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
       if (req.method === 'HEAD') { res.end(); return; }
-      fs.createReadStream(indexPath).pipe(res);
+      pipeline(fs.createReadStream(indexPath), res).catch(err => console.warn('[Static stream]', err.message));
     } else {
       res.writeHead(404);
       res.end('Not found. Have you run `npm run build`?');

@@ -49,11 +49,17 @@ export default function useDeleteUndoManager(fetchCollections) {
     try {
       const res = await fetch(deleteUrlFor(item), { method: 'POST' });
       const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       if (data.folderDeleted && fetchCollections) {
-        await fetchCollections();
+        try { await fetchCollections(); } catch (err) { console.error('Failed to refresh collections:', err); }
       }
     } catch (err) {
       console.error('Failed to commit delete:', err);
+      item.onUndo?.();
+      setToasts(prev => [...prev, {
+        id, name: item.name, mediaType: item.mediaType, error: '删除未完成，内容已恢复，请稍后重试',
+        onDismiss: () => setToasts(current => current.filter(t => t.id !== id)),
+      }]);
     }
   }, [fetchCollections]);
 
@@ -99,9 +105,15 @@ export default function useDeleteUndoManager(fetchCollections) {
       onUndo,
       onCommit: () => {
         fetch(deleteUrlFor({ collection, name, postId }), { method: 'POST' })
-          .then(r => r.json())
-          .then(d => { if (d.folderDeleted && fetchCollections) fetchCollections(); })
-          .catch(e => console.error(e));
+          .then(async r => {
+            const data = await r.json();
+            if (!r.ok || data.error) throw new Error(data.error || `HTTP ${r.status}`);
+            return data;
+          })
+          .then(d => {
+            if (d.folderDeleted && fetchCollections) return Promise.resolve(fetchCollections()).catch(e => console.error(e));
+          })
+          .catch(e => { console.error(e); onUndo?.(); });
       }
     };
 
@@ -118,7 +130,7 @@ export default function useDeleteUndoManager(fetchCollections) {
       onDismiss: () => commitDelete(id)
     };
 
-    setToasts(prev => [...prev.slice(-2), newToast]);
+    setToasts(prev => [...prev, newToast]);
   }, [commitDelete, undoDelete, fetchCollections]);
 
   return { toasts, queueDelete };

@@ -14,6 +14,9 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
+import { pipeline } from 'node:stream/promises';
+import { Readable, Transform } from 'node:stream';
+import { parseByteRange } from './http-range.js';
 import * as personDetector from './person-detector.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -300,6 +303,9 @@ function loadAuthConfig() {
   try {
     if (fs.existsSync(AUTH_CONFIG_PATH)) {
       const data = JSON.parse(fs.readFileSync(AUTH_CONFIG_PATH, 'utf8'));
+      if (!data || typeof data !== 'object' || Array.isArray(data) ||
+          (data.sessions !== undefined && !Array.isArray(data.sessions)) ||
+          (data.accessLogs !== undefined && !Array.isArray(data.accessLogs))) throw new Error('Invalid auth config');
       if (!data.sessions) data.sessions = [];
       if (!data.accessLogs) data.accessLogs = [];
       if (data.enabled === undefined) data.enabled = false;
@@ -308,6 +314,7 @@ function loadAuthConfig() {
     }
   } catch (err) {
     console.warn('[Auth] Failed to load auth config:', err.message);
+    return { enabled: true, passwordHash: '', sessionMaxAge: 86400000, sessions: [], accessLogs: [], loadError: true };
   }
   return {
     enabled: false, passwordHash: '',
@@ -320,7 +327,9 @@ function saveAuthConfig(config) {
     const now = Date.now();
     config.sessions = config.sessions.filter(s => s.expiresAt > now);
     if (config.accessLogs.length > 50) config.accessLogs = config.accessLogs.slice(0, 50);
-    fs.writeFileSync(AUTH_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
+    const tmp = `${AUTH_CONFIG_PATH}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tmp, AUTH_CONFIG_PATH);
     return true;
   } catch (err) {
     console.warn('[Auth] Failed to save auth config:', err.message);
@@ -342,7 +351,8 @@ function parseCookies(cookieHeader) {
   if (!cookieHeader) return list;
   cookieHeader.split(';').forEach(cookie => {
     const parts = cookie.split('=');
-    list[parts.shift().trim()] = decodeURI(parts.join('='));
+    const key = parts.shift().trim();
+    try { list[key] = decodeURI(parts.join('=')); } catch { /* Ignore malformed cookies. */ }
   });
   return list;
 }
@@ -445,6 +455,7 @@ async function harvestDownload(urlString, targetDir, base) {
       Referer: 'https://www.instagram.com/',
     },
     redirect: 'follow',
+    signal: AbortSignal.timeout(600000),
   });
   if (!res.ok || !res.body) {
     try { res.body?.cancel?.(); } catch {}
@@ -454,18 +465,18 @@ async function harvestDownload(urlString, targetDir, base) {
   const out = fs.createWriteStream(tmpPath);
   try {
     let size = 0;
-    for await (const chunk of res.body) {
-      size += chunk.length;
-      if (size > HARVEST_MAX_BYTES) throw new Error('文件超过大小上限');
-      if (!out.write(chunk)) await new Promise(r => out.once('drain', r));
-    }
+    await pipeline(Readable.fromWeb(res.body), new Transform({
+      transform(chunk, encoding, callback) {
+        size += chunk.length;
+        callback(size > HARVEST_MAX_BYTES ? new Error('文件超过大小上限') : null, chunk);
+      },
+    }), out);
   } catch (err) {
-    try { res.body.cancel?.(); } catch {}
+    try { await res.body.cancel?.(); } catch {}
     try { out.destroy(); } catch {}
     try { fs.unlinkSync(tmpPath); } catch {}
     throw err;
   }
-  await new Promise(resolve => out.end(resolve));
   return tmpPath;
 }
 
@@ -717,6 +728,11 @@ export function createApiHandler() {
   return (req, res, next) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const authConfig = loadAuthConfig();
+    if (authConfig.loadError && url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/userscript/')) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '认证配置无法读取，请检查服务器配置文件' }));
+      return;
+    }
 
     // ── Global auth interceptor ────────────────────────────────────────
     if (url.pathname.startsWith('/api/') &&
@@ -1355,9 +1371,13 @@ export function createApiHandler() {
         const rangeHeader = req.headers.range;
 
         if (rangeHeader) {
-          const parts = rangeHeader.replace(/bytes=/, '').split('-');
-          const start = parseInt(parts[0], 10);
-          const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+          const range = parseByteRange(rangeHeader, stat.size);
+          if (!range) {
+            res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` });
+            res.end();
+            return;
+          }
+          const { start, end } = range;
           const chunksize = end - start + 1;
           res.writeHead(206, {
             'Content-Range': `bytes ${start}-${end}/${stat.size}`,
@@ -1366,7 +1386,7 @@ export function createApiHandler() {
             'Content-Type': mimeType,
             'Cache-Control': 'public, max-age=31536000, immutable',
           });
-          fs.createReadStream(resolvedPath, { start, end }).pipe(res);
+          pipeline(fs.createReadStream(resolvedPath, { start, end }), res).catch(err => console.warn('[Media stream]', err.message));
         } else {
           res.writeHead(200, {
             'Content-Type': mimeType,
@@ -1374,7 +1394,7 @@ export function createApiHandler() {
             'Accept-Ranges': 'bytes',
             'Cache-Control': 'public, max-age=31536000, immutable',
           });
-          fs.createReadStream(resolvedPath).pipe(res);
+          pipeline(fs.createReadStream(resolvedPath), res).catch(err => console.warn('[Media stream]', err.message));
         }
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -2384,7 +2404,7 @@ export function createApiHandler() {
             'Cache-Control': 'public, max-age=86400',
             'X-Cache': 'THUMB-FILE',
           });
-          fs.createReadStream(thumbFile).pipe(res);
+          pipeline(fs.createReadStream(thumbFile), res).catch(err => console.warn('[Thumbnail stream]', err.message));
           return;
         }
 
@@ -2409,7 +2429,7 @@ export function createApiHandler() {
               'Cache-Control': 'public, max-age=86400',
               'X-Cache': 'THUMB-GEN',
             });
-            fs.createReadStream(createdPath).pipe(res);
+            pipeline(fs.createReadStream(createdPath), res).catch(err => console.warn('[Thumbnail stream]', err.message));
           } else {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Failed to extract video thumbnail' }));

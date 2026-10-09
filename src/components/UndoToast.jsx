@@ -14,16 +14,16 @@ export default function UndoToast({ toasts = [] }) {
             </div>
             <div className="undo-toast-text">
               <div className="undo-toast-title">
-                已删除{toast.mediaType || '文件'} <span className="undo-toast-filename">"{toast.name}"</span>
+                {toast.error ? '删除失败' : `已删除${toast.mediaType || '文件'}`} <span className="undo-toast-filename">"{toast.name}"</span>
                 {toast.isLastMedia && <span className="undo-toast-last-tag">（空图集已清理）</span>}
               </div>
               <div className="undo-toast-subtitle">
-                {toast.timeLeft !== undefined ? `${toast.timeLeft} 秒内可撤回` : '10 秒内可撤回'}
+                {toast.error || (toast.timeLeft !== undefined ? `${toast.timeLeft} 秒内可撤回` : '10 秒内可撤回')}
               </div>
             </div>
           </div>
           <div className="undo-toast-actions">
-            <button
+            {!toast.error && <button
               type="button"
               className="undo-toast-btn-undo"
               onClick={(e) => {
@@ -33,11 +33,11 @@ export default function UndoToast({ toasts = [] }) {
             >
               <RotateCcw size={13} />
               <span>撤回</span>
-            </button>
+            </button>}
             <button
               type="button"
               className="undo-toast-btn-close"
-              title="立即确认并关闭"
+              title={toast.error ? '关闭' : '立即确认并关闭'}
               onClick={(e) => {
                 e.stopPropagation();
                 toast.onDismiss && toast.onDismiss();
@@ -47,12 +47,12 @@ export default function UndoToast({ toasts = [] }) {
             </button>
           </div>
           {/* Progress countdown bar */}
-          <div
+          {!toast.error && <div
             className="undo-toast-progress-bar"
             style={{
               animationDuration: `${toast.duration || 10000}ms`
             }}
-          />
+          />}
         </div>
       ))}
     </div>

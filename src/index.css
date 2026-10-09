@@ -1145,6 +1145,9 @@ html, body, #root, .app-container {
   pointer-events: none;
   max-width: 90vw;
   width: 420px;
+  max-height: calc(100dvh - 160px);
+  overflow-y: auto;
+  pointer-events: auto;
 }
 
 .undo-toast-item {
